@@ -165,4 +165,4 @@ Agent：完成！文件已保存。
 
 MIT — 与 Reasonix 核心相同。
 
-由 Reasonix 社区为 Reasonix 生态构建。
+由 Plocr 与 Boss 共同构建。
