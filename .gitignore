@@ -27,5 +27,5 @@ desktop.ini
 .reasonix/
 reasonix-plugin.json.local
 
-# Don't ignore memory cache
-!memory/
+# Auto-generated cache
+memory/swlist.md
