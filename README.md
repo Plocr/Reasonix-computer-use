@@ -163,6 +163,8 @@ Agent：完成！文件已保存。
 
 ## 📄 许可证
 
-MIT — 与 Reasonix 核心相同。
+MIT — see [LICENSE](LICENSE).
+
+Built on top of [DeepSeek-Reasonix](https://github.com/esengine/DeepSeek-Reasonix).
 
 
