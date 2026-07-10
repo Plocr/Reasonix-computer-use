@@ -1,12 +1,12 @@
 """Computer use tools - Application discover and launch module.
 
-New logic:
-1. First run (or no cache): Execute two PowerShell commands -> output to memory/applist.md
-   - Command 1: Registry scan (3 paths including WOW6432Node)
-   - Command 2: Get-AppxPackage (Store apps)
-2. Subsequent runs: Read from applist.md cache
-3. If app not found: Re-scan both commands, overwrite applist.md
-4. If still not found: Detect green software (desktop shortcuts, downloads, common portable dirs)
+新逻辑：
+1. 首次执行（或缓存不存在）：执行两个 PowerShell 命令，结果输出到 memory/applist.md
+   - 命令1：注册表扫描（3 个路径）
+   - 命令2：Get-AppxPackage（Store 应用）
+2. 后续执行（缓存存在）：在 applist.md 中搜索
+3. 如果搜索不到：重新执行两个命令，覆盖旧 applist.md
+4. 如果仍然找不到：检测绿色软件（桌面快捷方式、下载目录、常见绿色软件目录）
 """
 
 import json
@@ -18,18 +18,18 @@ from reasonix_computer_use.utils import parse_result
 
 CACHE_FILENAME = "applist.md"
 
-# PowerShell commands provided by BOSS
+# PowerShell 命令：使用 ConvertTo-Csv 替代 Format-Table 避免编码问题
 _REGISTRY_COMMAND = r'''
 Get-ChildItem -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall", "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" -ErrorAction SilentlyContinue |
     Get-ItemProperty |
     Where-Object { $_.DisplayName } |
     Select-Object DisplayName, DisplayVersion, InstallLocation |
     Sort-Object DisplayName |
-    Format-Table -AutoSize -Wrap
+    ConvertTo-Csv -NoTypeInformation -Delimiter "`t"
 '''
 
 _APPX_COMMAND = '''
-Get-AppxPackage | Select PackageFullName, InstallLocation | Sort PackageFullName | Format-Table -AutoSize -Wrap
+Get-AppxPackage | Select PackageFullName, InstallLocation | Sort PackageFullName | ConvertTo-Csv -NoTypeInformation -Delimiter "`t"
 '''
 
 
@@ -98,7 +98,7 @@ def _read_cache():
 
 
 def _search_in_cache(cache_content, search_term):
-    """Search for an app in cached content."""
+    """Search for an app in cached content (CSV format, tab-delimited)."""
     if not cache_content:
         return []
 
@@ -111,9 +111,8 @@ def _search_in_cache(cache_content, search_term):
             continue
         if stripped.startswith("#") or stripped.startswith(">"):
             continue
-        if stripped.startswith("DisplayName") or stripped.startswith("PackageFullName"):
-            continue
-        if stripped.startswith("-"):
+        # Skip CSV header line
+        if stripped.startswith('"DisplayName"') or stripped.startswith('"PackageFullName"'):
             continue
 
         if search_lower in stripped.lower():
@@ -170,7 +169,27 @@ def _detect_portable_software(app_name):
     search_lower = app_name.lower()
     findings = []
 
-    # Common directories where green software might be installed
+    # 1. Check desktop shortcuts (.lnk files)
+    desktop_dir = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
+    if os.path.isdir(desktop_dir):
+        try:
+            for item in os.listdir(desktop_dir):
+                item_lower = item.lower()
+                if search_lower in item_lower and item_lower.endswith(".lnk"):
+                    lnk_path = os.path.join(desktop_dir, item)
+                    target = _resolve_lnk_target(lnk_path)
+                    if target and target.endswith(".exe") and os.path.exists(target):
+                        findings.append({
+                            "name": os.path.splitext(item)[0],
+                            "path": target,
+                            "type": "green_software_lnk",
+                            "location": desktop_dir,
+                            "shortcut": lnk_path
+                        })
+        except (PermissionError, OSError):
+            pass
+
+    # 2. Check common directories for green software
     common_dirs = [
         os.path.join(os.environ.get("USERPROFILE", ""), "Desktop"),
         os.path.join(os.environ.get("USERPROFILE", ""), "Downloads"),
@@ -187,7 +206,6 @@ def _detect_portable_software(app_name):
         try:
             for item in os.listdir(base_dir):
                 item_path = os.path.join(base_dir, item)
-                # Check directory name matching
                 if search_lower in item.lower() and os.path.isdir(item_path):
                     for f in os.listdir(item_path):
                         if f.lower().endswith(".exe"):
@@ -198,7 +216,6 @@ def _detect_portable_software(app_name):
                                 "location": item_path
                             })
                             break
-                # Check .exe filename matching
                 if search_lower in item.lower() and item.lower().endswith(".exe") and os.path.isfile(item_path):
                     findings.append({
                         "name": os.path.splitext(item)[0],
@@ -213,7 +230,7 @@ def _detect_portable_software(app_name):
 
 
 def _extract_install_path(cache_content, app_name):
-    """Extract install path for a specific app from cached content."""
+    """Extract install path for a specific app from cached content (CSV, tab-delimited)."""
     search_lower = app_name.lower()
 
     for line in cache_content.splitlines():
@@ -222,11 +239,13 @@ def _extract_install_path(cache_content, app_name):
             continue
         if stripped.startswith("#") or stripped.startswith(">"):
             continue
-        if stripped.startswith("DisplayName") or stripped.startswith("-"):
+        # Skip CSV header line
+        if stripped.startswith('"DisplayName"') or stripped.startswith('"PackageFullName"'):
             continue
 
         if search_lower in stripped.lower():
-            parts = [p.strip() for p in stripped.split("|")]
+            # CSV format: "DisplayName"	"DisplayVersion"	"InstallLocation"
+            parts = [p.strip().strip('"') for p in stripped.split("\t")]
             if len(parts) >= 3:
                 install_path = parts[2].strip()
                 if install_path and os.path.isdir(install_path):
@@ -241,7 +260,7 @@ def _extract_install_path(cache_content, app_name):
 
 Logic:
 - First run: Execute PowerShell to scan registry + Microsoft Store
-- Cache results to memory/applist.md
+- Cache results to memory/applist.md (CSV format)
 - Subsequent runs: Read from cache (fast)
 - If search miss: Auto-refresh cache
 - If still missing: Detect green software
