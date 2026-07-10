@@ -2,20 +2,19 @@
 # after-action.sh — Reasonix Computer Use 插件的操作后日志与记忆钩子
 #
 # 该钩子在每次 computer use 工具执行后调用。
-# 可以：
-# - 记录操作和结果，用于审计
-# - 捕获操作后截图，用于回放/调试
-# - 更新记忆文件，供后续参考
+# 截图清理策略：
+# - 操作成功：删除涉及截图，避免臃肿
+# - 操作失败：保留最近截图供调试，清理超过 60 分钟的旧截图
+# - 每次执行后：清理超过 60 分钟的历史截图
 #
 # 可用的环境变量：
 #   REASONIX_TOOL_NAME    — 刚刚调用的工具
 #   REASONIX_TOOL_ARGS    — 传递的 JSON 参数
-#   REASONIX_TOOL_RESULT  — 工具执行结果（成功时为 "ok"）
+#   REASONIX_TOOL_RESULT  — 工具执行结果
 #   REASONIX_EXIT_CODE    — 工具退出码（0 = 成功）
 #   REASONIX_WINDOW_TITLE — 当前窗口标题
 #   REASONIX_SCREENSHOT_BEFORE — 操作前截图路径
-#   REASONIX_MEMORY_DIR   — memory/ 目录路径（用于保存日志）
-#   REASONIX_SESSION_ID   — 当前会话标识符（如果可用）
+#   REASONIX_MEMORY_DIR   — memory/ 目录路径
 
 TOOL_NAME="${REASONIX_TOOL_NAME:-unknown}"
 TOOL_ARGS="${REASONIX_TOOL_ARGS:-{}}"
@@ -23,101 +22,87 @@ EXIT_CODE="${REASONIX_EXIT_CODE:-0}"
 MEMORY_DIR="${REASONIX_MEMORY_DIR:-./memory}"
 SCREENSHOT_DIR="${MEMORY_DIR}/screenshots"
 LOG_FILE="${MEMORY_DIR}/operation-log.md"
+SCREENSHOT_BEFORE="${REASONIX_SCREENSHOT_BEFORE:-}"
 
 # ─── 配置 ───────────────────────────────────────────────────────────
+
+# 截图保留时间（分钟），超过此时间的截图自动清理
+SCREENSHOT_KEEP_MINUTES=60
 
 # ─── 辅助函数 ─────────────────────────────────────────────────────────────────
 
 log() {
-    echo "[computer-use 钩子] $(date '+%Y-%m-%d %H:%M:%S') $*" >&2
+    echo "[computer-use hook] $(date '+%Y-%m-%d %H:%M:%S') $*" >&2
 }
 
 ensure_dir() {
     mkdir -p "$1"
 }
 
-# 使用 PID + 计数器生成唯一的截图文件名，避免碰撞
-screenshot_path() {
-    # 使用 $$（PID）+ 秒 + 纳秒确保唯一性
-    # 备用：如果不支持 %N（macOS），使用 PID + 随机数
-    local timestamp
-    timestamp=$(date '+%Y%m%d_%H%M%S' 2>/dev/null)
-    local nano=""
-    # 尝试纳秒，回退到基于 PID 的唯一性
-    nano=$(date '+%N' 2>/dev/null)
-    if [ "$nano" = "%N" ] || [ -z "$nano" ]; then
-        nano="$$_$RANDOM"
-    fi
-    echo "${SCREENSHOT_DIR}/操作后_${TOOL_NAME}_${timestamp}_${nano}.png"
-}
+# ─── 截图清理 ──────────────────────────────────────────────────────────
 
-# ─── 截图捕获 ──────────────────────────────────────────────────────
-
-capture_screenshot() {
-    local output_path="$1"
-    ensure_dir "$(dirname "$output_path")"
-    
-    # 使用 Python 截屏并保存到指定路径
-    python3 -c "
-import sys
-try:
-    import pyautogui
-    screenshot = pyautogui.screenshot()
-    screenshot.save(sys.argv[1], 'PNG')
-    print('OK')
-except Exception as e:
-    print(f'Error: {e}', file=sys.stderr)
-    sys.exit(1)
-" "$output_path" 2>/dev/null
-    
-    if [ $? -eq 0 ] && [ -f "$output_path" ]; then
-        log "截图已保存: $output_path"
-        echo "$output_path"
-    else
-        log "截图捕获失败"
-        echo ""
-    fi
-}
-
-# ─── 记忆日志 ──────────────────────────────────────────────────────────
-
-update_operation_log() {
-    local timestamp
-    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    
-    ensure_dir "$MEMORY_DIR"
-    
-    # 如果日志文件不存在，创建带标题的文件
-    if [ ! -f "$LOG_FILE" ]; then
-        echo "# Computer Use 操作日志" > "$LOG_FILE"
-        echo "" >> "$LOG_FILE"
-        echo "| 时间戳 | 工具 | 参数 | 结果 | 退出码 | 窗口 | 截图 |" >> "$LOG_FILE"
-        echo "|--------|------|------|------|--------|------|------|" >> "$LOG_FILE"
+cleanup_old_screenshots() {
+    if [ ! -d "$SCREENSHOT_DIR" ]; then
+        return
     fi
     
-    # 转义工具参数中的管道符
-    local safe_args
-    safe_args=$(echo "$TOOL_ARGS" | sed 's/|/\\|/g')
+    local cleaned=0
+    local keep_seconds=$((SCREENSHOT_KEEP_MINUTES * 60))
+    local now=$(date +%s)
     
-    # 追加日志条目
-    echo "| $timestamp | $TOOL_NAME | $safe_args | ${REASONIX_TOOL_RESULT:-ok} | $EXIT_CODE | ${REASONIX_WINDOW_TITLE:-unknown} | ${LAST_SCREENSHOT:-} |" >> "$LOG_FILE"
+    for f in "$SCREENSHOT_DIR"/screenshot_*.png; do
+        [ -f "$f" ] || continue
+        local mtime=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo "0")
+        local age=$((now - mtime))
+        if [ "$age" -gt "$keep_seconds" ]; then
+            rm -f "$f" 2>/dev/null
+            cleaned=$((cleaned + 1))
+        fi
+    done
     
-    log "操作已记录到 $LOG_FILE"
+    if [ "$cleaned" -gt 0 ]; then
+        log "已清理 $cleaned 张超过 ${SCREENSHOT_KEEP_MINUTES} 分钟的旧截图"
+    fi
 }
 
 # ─── 主逻辑 ──────────────────────────────────────────────────────────────
 
 LAST_SCREENSHOT=""
 
-# 字符串比较，避免 bash 整数问题
 if [ "$EXIT_CODE" = "0" ]; then
-    screen_path=$(screenshot_path)
-    if [ -n "$screen_path" ]; then
-        LAST_SCREENSHOT=$screen_path
+    # 操作成功：不保留截图，直接清理相关截图
+    if [ -n "$SCREENSHOT_BEFORE" ] && [ -f "$SCREENSHOT_BEFORE" ]; then
+        rm -f "$SCREENSHOT_BEFORE" 2>/dev/null
+        log "操作成功，已清理操作前截图: $SCREENSHOT_BEFORE"
+    fi
+else
+    # 操作失败：保留截图供调试，生成时间戳命名
+    timestamp=$(date '+%Y%m%d_%H%M%S' 2>/dev/null)
+    LAST_SCREENSHOT="${SCREENSHOT_DIR}/failed_${TOOL_NAME}_${timestamp}.png"
+    
+    # 如果存在操作前截图，保留它
+    if [ -n "$SCREENSHOT_BEFORE" ] && [ -f "$SCREENSHOT_BEFORE" ]; then
+        # 重命名为失败截图
+        mv "$SCREENSHOT_BEFORE" "$LAST_SCREENSHOT" 2>/dev/null
+        log "操作失败，保留截图供调试: $LAST_SCREENSHOT"
     fi
 fi
 
-# 更新操作日志
-update_operation_log
+# 每次执行后都清理超过保留时间的旧截图
+cleanup_old_screenshots
+
+# ─── 操作日志 ─────────────────────────────────────────────────────────────────
+
+ensure_dir "$MEMORY_DIR"
+
+if [ ! -f "$LOG_FILE" ]; then
+    echo "# Computer Use 操作日志" > "$LOG_FILE"
+    echo "" >> "$LOG_FILE"
+    echo "| 时间戳 | 工具 | 退出码 | 保留截图 |" >> "$LOG_FILE"
+    echo "|--------|------|--------|----------|" >> "$LOG_FILE"
+fi
+
+timestamp=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
+echo "| $timestamp | $TOOL_NAME | $EXIT_CODE | ${LAST_SCREENSHOT:-无} |" >> "$LOG_FILE"
 
 exit 0
