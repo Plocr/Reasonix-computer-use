@@ -16,7 +16,7 @@ def parse_result(result: Any) -> str:
     """
     if isinstance(result, str):
         return result
-    return json.dumps(result, ensure_ascii=True, default=str)
+    return json.dumps(result, ensure_ascii=False, default=str)
 
 
 def safe_get(dictionary: dict, key: str, default: Any = None) -> Any:

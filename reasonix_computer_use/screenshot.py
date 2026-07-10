@@ -17,7 +17,7 @@ from reasonix_computer_use.utils import parse_result
 
 
 # 截图保存目录（持久化，插件包 memory/ 下）
-SCREENSHOT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "memory", "screenshots")
+SCREENSHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "memory", "screenshots")
 
 
 def _get_screenshot_dir():

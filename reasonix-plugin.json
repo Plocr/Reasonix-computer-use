@@ -1,19 +1,19 @@
 {
   "name": "computer-use",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Reasonix computer use plugin - provides Windows GUI automation capabilities",
   "skills": "skills",
   "hooks": {
     "PreToolUse": [
       {
-        "command": "hooks/before-action.sh",
-        "description": "Safety check before computer use actions"
+        "command": "hooks/before-action.bat",
+        "description": "Safety check before computer use actions (Windows batch)"
       }
     ],
     "PostToolUse": [
       {
-        "command": "hooks/after-action.sh",
-        "description": "Log action and capture screenshot"
+        "command": "hooks/after-action.bat",
+        "description": "Log operation results (Windows batch)"
       }
     ]
   },
