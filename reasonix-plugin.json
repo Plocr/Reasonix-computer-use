@@ -1,24 +1,16 @@
 {
   "name": "computer-use",
   "version": "0.1.0",
-  "description": "Reasonix computer use plugin - provides Windows GUI automation capabilities.",
-  "author": "Reasonix Community",
-  "license": "MIT",
-  "description_long": "A complete computer use plugin package for Windows that provides browser-outside GUI automation. Operates desktop applications, system settings, and native Windows apps through screenshot, mouse, keyboard, and UI tree access.",
-  "homepage": "https://github.com/你的ID/reasonix-computer-use",
-  "repository": "https://github.com/你的ID/reasonix-computer-use",
-  "skills": [
-    "skills/app-control.md",
-    "skills/form-fill.md"
-  ],
+  "description": "Reasonix computer use plugin - provides Windows GUI automation capabilities",
+  "skills": "skills",
   "hooks": {
-    "beforeAction": [
+    "PreToolUse": [
       {
         "command": "hooks/before-action.sh",
         "description": "Safety check before computer use actions"
       }
     ],
-    "afterAction": [
+    "PostToolUse": [
       {
         "command": "hooks/after-action.sh",
         "description": "Log action and capture screenshot"
@@ -27,9 +19,7 @@
   },
   "mcpServers": {
     "computer-use": {
-      "type": "stdio",
-      "command": "reasonix-computer-use.bat",
-      "args": []
+      "command": "reasonix-computer-use.bat"
     }
   }
 }
