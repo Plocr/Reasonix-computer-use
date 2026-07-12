@@ -12,3 +12,4 @@ Windows 桌面任务只使用四个工具：`computer_app`、`computer_state`、
 6. 网页 DOM 操作交给 `chrome-devtools`；本插件只处理浏览器窗口和系统文件选择器。
 7. 密码、验证码、UAC、支付、删除、协议确认和不可逆操作必须让用户接管或确认。
 8. `computer_system(command)` 只允许单条只读诊断，禁止用 PowerShell/SendKeys/Win32 脚本替代 GUI 工具。
+9. 每次修改功能、接口、安装方式、依赖或发布流程时，同步更新 README.md 的对应说明和版本状态。
