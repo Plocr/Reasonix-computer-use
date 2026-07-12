@@ -20,7 +20,7 @@ if errorlevel 1 exit /b 1
 :register
 echo.
 echo Runtime is ready. Register the plugin with one of:
-echo   reasonix plugin install "%~dp0" --link --replace --yes
+echo   reasonix plugin install "%~dp0" --replace --yes
 echo   Reasonix Desktop ^> Settings ^> Plugins ^> Local directory
 echo.
 echo Validate after installation:

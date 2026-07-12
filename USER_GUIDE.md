@@ -2,13 +2,16 @@
 
 ## 安装选择
 
-- 普通 Windows x64 用户：下载 GitHub Release 的自包含 ZIP，解压后在 Reasonix
-  Desktop 的“设置 → 插件 → 本地目录”中选择该目录，无需 Python。
+- 普通 Windows x64 用户：下载 GitHub Release 的自包含 ZIP，解压到
+  `C:\Users\<用户名>\ReasonixPlugins` 下，再在 Reasonix Desktop 的
+  “设置 → 插件 → 本地目录”中选择该目录，无需 Python。Reasonix 1.17.10 的桌面端
+  使用 link 模式，选择其他磁盘会触发 `link target escapes skill roots`。
 - Git 安装：在 Desktop 的“Git 仓库”中输入
   `git:github.com/Plocr/Reasonix-computer-use`。Git 安装前需准备 Python 3.10+ 和
   `pyautogui`、`Pillow`、`comtypes`、`rapidocr-onnxruntime`。
 - 本地开发：执行 `python -m pip install -e ".[dev]"`，再使用
-  `reasonix plugin install . --link --replace --yes`。
+  `reasonix plugin install . --replace --yes`。只有源码位于 Reasonix 允许的目录内时
+  才使用 `--link`；其他磁盘会被 `link target escapes skill roots` 安全检查拒绝。
 
 安装或更新后开启新会话，避免继续使用旧 MCP 进程。
 

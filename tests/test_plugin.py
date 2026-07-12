@@ -42,7 +42,7 @@ async def test_mcp_initialize_and_list_report_08():
     from reasonix_computer_use.mcp_server import handle_initialize, handle_tools_list
 
     initialized = await handle_initialize(1)
-    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.2"
+    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.3"
     listed = await handle_tools_list(2)
     assert {tool["name"] for tool in listed["result"]["tools"]} == PUBLIC_TOOLS
 
@@ -479,6 +479,8 @@ async def test_failed_sendinput_uses_one_verified_clipboard_fallback(monkeypatch
     monkeypatch.setattr(domain_tools.REGISTRY, "get", lambda _: context)
     monkeypatch.setattr(domain_tools, "list_windows", lambda: [])
     monkeypatch.setattr(domain_tools, "activate_window", lambda *_a: None)
+    monkeypatch.setattr(domain_tools.user32, "GetForegroundWindow", lambda: 1)
+    monkeypatch.setattr(domain_tools, "reserve_text_input", lambda **_kwargs: True)
     monkeypatch.setattr(domain_tools, "_wait_stable", lambda *_a, **_k: asyncio.sleep(0))
     monkeypatch.setattr(domain_tools, "_refresh_semantic", lambda *_a: False)
     monkeypatch.setattr(domain_tools, "window_payload", lambda *_a, **_k: {"id": "w1"})
@@ -515,6 +517,8 @@ async def test_unverified_input_stops_following_keypress(monkeypatch):
     monkeypatch.setattr(domain_tools, "list_windows", lambda: [])
     monkeypatch.setattr(domain_tools, "_wait_stable", lambda *_a, **_k: asyncio.sleep(0))
     monkeypatch.setattr(domain_tools, "activate_window", lambda *_a: None)
+    monkeypatch.setattr(domain_tools.user32, "GetForegroundWindow", lambda: 1)
+    monkeypatch.setattr(domain_tools, "reserve_text_input", lambda **_kwargs: True)
     monkeypatch.setattr(domain_tools, "find_text", lambda *_a, **_k: {"matches": []})
     calls = []
 
@@ -559,6 +563,42 @@ async def test_shell_cannot_bypass_gui_executor_even_when_claimed_confirmed():
 
 
 @pytest.mark.asyncio
+async def test_shell_rejects_legacy_params_command_bypass():
+    from reasonix_computer_use.domain_tools import computer_system
+
+    result = json.loads(await computer_system({
+        "operation": "command", "target": "",
+        "params": {"command": "[Windows.Forms.SendKeys]::SendWait('x')", "confirmed": True}
+    }))
+    assert result["code"] == "command_argument_blocked"
+    assert result["blocked"] is True
+
+
+def test_cross_process_input_guard_blocks_recent_replay(monkeypatch, tmp_path):
+    from reasonix_computer_use import input_guard
+
+    monkeypatch.setattr(input_guard, "memory_dir", lambda: tmp_path)
+    values = dict(app_identity="qqmusic", window_class="TXGuiFoundation",
+                  state_hash="blank-search", target_ref="e1", text="周杰伦", now=1000.0)
+    assert input_guard.reserve_text_input(**values) is True
+    assert input_guard.reserve_text_input(**values) is False
+    values["now"] = 1601.0
+    assert input_guard.reserve_text_input(**values) is True
+
+
+@pytest.mark.asyncio
+async def test_type_requires_target_window_to_remain_foreground(monkeypatch):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.runtime import WindowContext
+
+    context = WindowContext("w1", 101)
+    monkeypatch.setattr(domain_tools, "activate_window", lambda *_a: None)
+    monkeypatch.setattr(domain_tools.user32, "GetForegroundWindow", lambda: 202)
+    result = await domain_tools._execute(context, {"type": "type", "text": "x"})
+    assert result["code"] == "focus_denied"
+
+
+@pytest.mark.asyncio
 async def test_read_only_command_rejects_pipeline_mutation():
     from reasonix_computer_use.domain_tools import computer_system
 
@@ -595,7 +635,7 @@ async def test_file_write_requires_confirmation(tmp_path):
 def test_manifest_and_docs_reference_new_api():
     root = Path(__file__).resolve().parent.parent
     manifest = json.loads((root / "reasonix-plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.8.0-alpha.2"
+    assert manifest["version"] == "0.8.0-alpha.3"
     assert "SessionStart" in manifest["hooks"]
     routing = (root / "CLAUDE.md").read_text(encoding="utf-8")
     assert "chrome-devtools" in routing

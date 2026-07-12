@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .input_guard import reserve_text_input
 from .keyboard import VK_MAP, _send_key, computer_keyboard_press, computer_keyboard_type, paste_unicode_text
 from .mcp_server import register_tool
 from .mouse import computer_mouse_click, computer_mouse_move, computer_mouse_scroll
@@ -476,6 +477,9 @@ async def _execute(context: WindowContext, action: dict[str, Any]) -> dict[str, 
         except OSError:
             if user32.GetForegroundWindow() != context.hwnd:
                 return {"status": "error", "code": "focus_denied", "message": "目标窗口未获得键盘焦点"}
+        if user32.GetForegroundWindow() != context.hwnd:
+            return {"status": "error", "code": "focus_denied",
+                    "message": "目标窗口不是前台窗口，已拒绝键盘注入"}
         return _parse_result(await computer_keyboard_type({"text": str(action.get("text", "")),
                                                             "interval": min(float(action.get("interval", 0.01)), 0.1)}))
     if kind == "press":
@@ -675,6 +679,19 @@ async def computer_action(args: dict) -> str:
                 return tool_error("repeat_blocked", "同一 revision 上的相同动作已经执行，禁止重复点击",
                                   fallback="调用 computer_state 升级到下一感知策略")
             context.action_signatures.add(scoped)
+            if action.get("type") == "type":
+                info = context.info()
+                app_identity = context.app_fingerprint or context.app_path or context.app_id or context.app_name
+                if not reserve_text_input(app_identity=app_identity, window_class=info.class_name,
+                                          state_hash=context.state_hash,
+                                          target_ref=str(action.get("_target_ref", "")),
+                                          text=str(action.get("text", ""))):
+                    context.fail()
+                    return tool_error(
+                        "input_replay_blocked",
+                        "检测到旧任务正在重复同一文本输入，已在键盘注入前阻止",
+                        fallback="停止旧任务；如确需再次输入，请等待十分钟并重新观察当前窗口",
+                    )
             result = await _execute(context, action)
             safe_result = {key: value for key, value in result.items() if key not in ("text", "value", "clipboard")}
             results.append({"index": index, **safe_result})
@@ -835,6 +852,11 @@ async def computer_system(args: dict) -> str:
         if operation == "window":
             return _ok(window=_window_operation(target, params))
         if operation == "command":
+            legacy_command = str(params.get("command", "")).strip()
+            if legacy_command:
+                return parse_result({"status": "error", "code": "command_argument_blocked", "blocked": True,
+                                     "message": "command 只能通过 target 传入；params.command 已被拒绝以防绕过检查",
+                                     "next_hint": "桌面操作只能使用 computer_state/computer_action"})
             command = target.strip()
             lowered = f" {command.casefold()} "
             if any(marker in lowered for marker in GUI_SCRIPT_MARKERS):
