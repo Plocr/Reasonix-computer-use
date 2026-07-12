@@ -13,3 +13,4 @@ Windows 桌面任务只使用四个工具：`computer_app`、`computer_state`、
 7. 密码、验证码、UAC、支付、删除、协议确认和不可逆操作必须让用户接管或确认。
 8. `computer_system(command)` 只允许单条只读诊断，禁止用 PowerShell/SendKeys/Win32 脚本替代 GUI 工具。
 9. 每次修改功能、接口、安装方式、依赖或发布流程时，同步更新 README.md 的对应说明和版本状态。
+10. SessionStart 返回 `computer_use=setup_required` 时，先告知用户将下载依赖；确认后调用 `computer_system(operation="setup", params={"confirmed":true})`，再按 `poll_after_seconds` 轮询 `setup_status`。不得改用 Shell 执行 pip。

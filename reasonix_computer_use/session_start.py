@@ -6,14 +6,16 @@ import json
 import sys
 
 from .system_index import ensure_index
+from .environment_setup import environment_status
 
 
 def summary() -> dict:
     index = ensure_index("session-start")
     system = index.get("system", {})
     folders = index.get("known_folders", {})
+    environment = environment_status()
     return {
-        "computer_use": "ready",
+        "computer_use": "ready" if environment.get("ready") else "setup_required",
         "platform": system.get("platform", "Windows"),
         "language": system.get("language", "unknown"),
         "dpi_awareness": system.get("dpi_awareness", "unknown"),
@@ -22,6 +24,9 @@ def summary() -> dict:
                           if name in ("桌面", "文档", "下载")},
         "routing": "desktop: computer_app -> computer_state -> computer_action; web page: chrome-devtools",
         "tools": ["computer_app", "computer_state", "computer_action", "computer_system"],
+        "environment": {key: environment.get(key) for key in ("status", "ready", "missing")},
+        "setup_hint": (None if environment.get("ready") else
+                       "经用户确认后调用 computer_system(operation=setup, params.confirmed=true)，随后轮询 setup_status"),
     }
 
 

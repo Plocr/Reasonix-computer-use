@@ -42,7 +42,7 @@ async def test_mcp_initialize_and_list_report_08():
     from reasonix_computer_use.mcp_server import handle_initialize, handle_tools_list
 
     initialized = await handle_initialize(1)
-    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.3"
+    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.4"
     listed = await handle_tools_list(2)
     assert {tool["name"] for tool in listed["result"]["tools"]} == PUBLIC_TOOLS
 
@@ -527,12 +527,73 @@ async def test_unverified_input_stops_following_keypress(monkeypatch):
         return json.dumps({"status": "ok", "method": "send_input"})
 
     monkeypatch.setattr(domain_tools, "computer_keyboard_type", keyboard_type)
+    monkeypatch.setattr(domain_tools, "paste_unicode_text",
+                        lambda _text: (_ for _ in ()).throw(OSError("clipboard unavailable")))
     result = json.loads(await domain_tools.computer_action({
         "window_id": "w1", "revision": context.revision,
         "actions": [{"type": "type", "text": "周杰伦"}, {"type": "press", "keys": ["ENTER"]}]
     }))
     assert result["code"] == "input_not_verified"
     assert calls == ["type"]
+
+
+def test_environment_setup_requires_confirmation(monkeypatch, tmp_path):
+    from reasonix_computer_use import environment_setup
+
+    monkeypatch.setattr(environment_setup, "setup_root", lambda: tmp_path)
+    monkeypatch.setattr(environment_setup, "missing_modules", lambda: ["rapidocr_onnxruntime"])
+    result = environment_setup.start_environment_setup(False)
+    assert result["status"] == "confirmation_required"
+    assert result["missing"] == ["rapidocr_onnxruntime"]
+
+
+def test_environment_setup_starts_background_worker(monkeypatch, tmp_path):
+    from reasonix_computer_use import environment_setup
+
+    class Process:
+        pid = 4321
+
+    monkeypatch.setattr(environment_setup, "setup_root", lambda: tmp_path)
+    monkeypatch.setattr(environment_setup, "missing_modules", lambda: ["comtypes"])
+    original_find_spec = environment_setup.importlib.util.find_spec
+    monkeypatch.setattr(environment_setup.importlib.util, "find_spec",
+                        lambda name: object() if name == "pip" else original_find_spec(name))
+    monkeypatch.setattr(environment_setup.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    result = environment_setup.start_environment_setup(True)
+    assert result["status"] == "installing"
+    assert result["pid"] == 4321
+    assert result["poll_after_seconds"] == 3
+
+
+def test_environment_worker_installs_only_fixed_dependencies(monkeypatch, tmp_path):
+    from reasonix_computer_use import environment_setup
+
+    class Completed:
+        returncode = 0
+
+    calls = []
+    monkeypatch.setattr(environment_setup, "setup_root", lambda: tmp_path)
+    monkeypatch.setattr(environment_setup, "missing_modules", lambda: [])
+    monkeypatch.setattr(environment_setup.subprocess, "run",
+                        lambda command, **kwargs: calls.append((command, kwargs)) or Completed())
+    assert environment_setup.run_worker() == 0
+    command = calls[0][0]
+    assert command[-len(environment_setup.DEPENDENCIES):] == list(environment_setup.DEPENDENCIES)
+    assert "--target" in command
+    state = json.loads((tmp_path / "setup-state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_computer_system_exposes_setup_status(monkeypatch):
+    from reasonix_computer_use import domain_tools
+
+    monkeypatch.setattr(domain_tools, "environment_status",
+                        lambda: {"status": "installing", "ready": False,
+                                 "poll_after_seconds": 3, "log_tail": ["Downloading"]})
+    result = json.loads(await domain_tools.computer_system({"operation": "setup_status"}))
+    assert result["status"] == "installing"
+    assert result["poll_after_seconds"] == 3
 
 
 @pytest.mark.asyncio
@@ -635,7 +696,7 @@ async def test_file_write_requires_confirmation(tmp_path):
 def test_manifest_and_docs_reference_new_api():
     root = Path(__file__).resolve().parent.parent
     manifest = json.loads((root / "reasonix-plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.8.0-alpha.3"
+    assert manifest["version"] == "0.8.0-alpha.4"
     assert "SessionStart" in manifest["hooks"]
     routing = (root / "CLAUDE.md").read_text(encoding="utf-8")
     assert "chrome-devtools" in routing

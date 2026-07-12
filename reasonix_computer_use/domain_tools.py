@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .environment_setup import environment_status, start_environment_setup
 from .input_guard import reserve_text_input
 from .keyboard import VK_MAP, _send_key, computer_keyboard_press, computer_keyboard_type, paste_unicode_text
 from .mcp_server import register_tool
@@ -821,9 +822,9 @@ def _window_operation(target: str, params: dict[str, Any]) -> dict[str, Any]:
 
 @register_tool(
     name="computer_system",
-    description="查询或刷新系统画像，执行诊断、受控文件操作和窗口管理。command 仅允许单条只读诊断，禁止用 PowerShell 模拟 GUI、鼠标或键盘。",
+    description="查询环境、首次安装依赖、执行诊断、受控文件操作和窗口管理。setup 后用 setup_status 获取精简进度；command 仅允许单条只读诊断。",
     schema={"type": "object", "properties": {
-        "operation": {"type": "string", "enum": ["profile", "refresh", "diagnose", "file", "window", "command"]},
+        "operation": {"type": "string", "enum": ["profile", "refresh", "diagnose", "setup", "setup_status", "file", "window", "command"]},
         "target": {"type": "string"}, "params": {"type": "object"}}, "required": ["operation"]})
 async def computer_system(args: dict) -> str:
     operation = args.get("operation")
@@ -846,7 +847,13 @@ async def computer_system(args: dict) -> str:
                        displays=index.get("displays", []),
                        uia_available=importlib.util.find_spec("comtypes") is not None,
                        ocr_available=importlib.util.find_spec("rapidocr_onnxruntime") is not None,
-                       input_available=bool(user32), public_tools=4)
+                       input_available=bool(user32), public_tools=4,
+                       environment=environment_status())
+        if operation == "setup":
+            result = start_environment_setup(bool(params.get("confirmed", False)))
+            return parse_result(result)
+        if operation == "setup_status":
+            return parse_result(environment_status())
         if operation == "file":
             return _ok(result=_file_operation(target, params))
         if operation == "window":

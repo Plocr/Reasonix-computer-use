@@ -7,9 +7,9 @@
   “设置 → 插件 → 本地目录”中选择该目录，无需 Python。Reasonix 1.17.10 的桌面端
   使用 link 模式，选择其他磁盘会触发 `link target escapes skill roots`。
 - Git 安装：在 Desktop 的“Git 仓库”中输入
-  `git:github.com/Plocr/Reasonix-computer-use`。Git 安装不会自动配置环境，安装前需准备
-  Python 3.10+，并通过 pip 安装 `pyautogui`、`Pillow`、`comtypes`、
-  `rapidocr-onnxruntime`。不熟悉 Python 的用户应改用自包含 ZIP。
+  `git:github.com/Plocr/Reasonix-computer-use`。安装前只需准备 Python 3.10+；首次会话
+  检测到依赖缺失时，Agent 经用户确认后调用 `computer_system(setup)` 后台安装，并用
+  `setup_status` 展示精简进度。不熟悉 Python 的用户仍建议使用自包含 ZIP。
 - 本地开发：执行 `python -m pip install -e ".[dev]"`，再使用
   `reasonix plugin install . --replace --yes`。只有源码位于 Reasonix 允许的目录内时
   才使用 `--link`；其他磁盘会被 `link target escapes skill roots` 安全检查拒绝。
