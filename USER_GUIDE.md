@@ -1,5 +1,17 @@
 # Reasonix Computer Use 使用说明
 
+## 安装选择
+
+- 普通 Windows x64 用户：下载 GitHub Release 的自包含 ZIP，解压后在 Reasonix
+  Desktop 的“设置 → 插件 → 本地目录”中选择该目录，无需 Python。
+- Git 安装：在 Desktop 的“Git 仓库”中输入
+  `git:github.com/Plocr/Reasonix-computer-use`。Git 安装前需准备 Python 3.10+ 和
+  `pyautogui`、`Pillow`、`comtypes`、`rapidocr-onnxruntime`。
+- 本地开发：执行 `python -m pip install -e ".[dev]"`，再使用
+  `reasonix plugin install . --link --replace --yes`。
+
+安装或更新后开启新会话，避免继续使用旧 MCP 进程。
+
 ## 常规任务
 
 用户直接描述目标，例如“打开 QQ，进入设置并切换主题”。Agent 应按以下顺序调用：

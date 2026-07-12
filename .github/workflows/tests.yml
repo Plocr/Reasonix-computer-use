@@ -19,3 +19,12 @@ jobs:
         run: python -m pytest -q
       - name: Build wheel
         run: python -m pip wheel . --no-deps -w dist
+
+      - name: Validate release metadata
+        shell: pwsh
+        run: |
+          $manifest = Get-Content -Raw reasonix-plugin.json | ConvertFrom-Json
+          $project = Get-Content -Raw pyproject.toml
+          if ($project -notmatch ('version\s*=\s*"' + [regex]::Escape($manifest.version) + '"')) {
+            throw "pyproject.toml and reasonix-plugin.json versions differ"
+          }

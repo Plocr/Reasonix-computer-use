@@ -600,3 +600,37 @@ def test_manifest_and_docs_reference_new_api():
     routing = (root / "CLAUDE.md").read_text(encoding="utf-8")
     assert "chrome-devtools" in routing
     assert "computer_task_start" not in routing
+
+
+def test_readme_documents_git_dependencies_and_windows_release():
+    root = Path(__file__).resolve().parent.parent
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    assert "git:github.com/Plocr/Reasonix-computer-use" in readme
+    for dependency in ("pyautogui", "Pillow", "comtypes", "rapidocr-onnxruntime"):
+        assert dependency in readme
+    assert "windows-x64.zip" in readme
+    assert "无需安装 Python" in readme
+
+
+def test_release_builder_uses_manifest_version_and_emits_checksum():
+    root = Path(__file__).resolve().parent.parent
+    script = (root / "scripts" / "build_release.ps1").read_text(encoding="utf-8")
+    assert "ConvertFrom-Json" in script
+    assert "$manifest.version" in script
+    assert "windows-x64" in script
+    assert "Get-FileHash" in script
+    assert "pyproject.toml" in script
+    assert "@dependencies" in script
+    assert "0.8.0-alpha.0" not in script
+
+
+def test_windows_release_workflow_builds_and_publishes_assets():
+    root = Path(__file__).resolve().parent.parent
+    workflow = (root / ".github" / "workflows" / "release-windows.yml").read_text(encoding="utf-8")
+    assert "workflow_dispatch" in workflow
+    assert 'tags:' in workflow
+    assert "build_release.ps1" in workflow
+    assert "actions/upload-artifact@v4" in workflow
+    assert "gh @arguments" in workflow
+    assert "dist/*.sha256" in workflow
+    assert "$assets = Get-ChildItem dist" in workflow

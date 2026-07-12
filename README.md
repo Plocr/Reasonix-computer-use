@@ -88,32 +88,82 @@ reasonix-computer-use/
 
 ## 安装
 
-普通本地安装：
+### Windows 自包含发行包（推荐）
+
+普通 Windows 10/11 x64 用户优先从 GitHub Releases 下载：
+
+```text
+reasonix-computer-use-<版本>-windows-x64.zip
+```
+
+压缩包已经包含 Python、UIA、RapidOCR、ONNX Runtime 和 OCR 模型，无需安装 Python
+或运行 `pip`。解压后有两种安装方式：
+
+- Reasonix Desktop：打开 **设置 → 插件 → 本地目录**，选择解压后的插件目录。
+- CLI：执行 `reasonix plugin install <解压目录> --replace --yes`。
+
+安装完成后运行 `reasonix plugin doctor computer-use`，并开启一个新会话。
+
+### Reasonix Desktop Git 安装
+
+已安装 Python 依赖的开发者可以打开 **设置 → 插件 → Git 仓库**，直接输入：
+
+```text
+git:github.com/Plocr/Reasonix-computer-use
+```
+
+先点 **预检**，再点 **安装插件**。更新现有版本时勾选 **覆盖同名插件**。
+Git 安装只复制仓库，不会自动运行 `pip`，因此必须先安装下面列出的 Python 依赖。
+
+### CLI Git 安装
+
+要求 Python 3.10 或更高版本。先安装本项目直接使用的必要库：
 
 ```powershell
-python -m pip install -e .
-reasonix plugin install . --replace --yes
+python -m pip install "pyautogui>=0.9.54" "Pillow>=10.0.0" `
+  "comtypes>=1.4.0" "rapidocr-onnxruntime>=1.4.4"
+reasonix plugin install git:github.com/Plocr/Reasonix-computer-use --replace --yes
 reasonix plugin doctor computer-use
 ```
 
-安装或升级后需要结束旧任务，使旧的 `python -m reasonix_computer_use` MCP
-进程退出。新的 Reasonix 工具调用会按当前版本重新启动服务。
+`rapidocr-onnxruntime` 会自动安装 NumPy、ONNX Runtime 等传递依赖，不需要逐项安装。
 
-维护者开发时可使用目录链接安装：
+### 本地开发安装
+
+克隆仓库后安装项目和测试依赖：
 
 ```powershell
+python -m pip install -e ".[dev]"
 reasonix plugin install . --link --replace --yes
+reasonix plugin doctor computer-use
 ```
 
-Reasonix Desktop 也可以从“插件 → 本地目录”选择本仓库。正式发行包会附带 Python 依赖和 RapidOCR/ONNX Runtime，普通用户不需要单独执行 pip。
+安装或升级任一来源后，需要结束旧任务，使旧的
+`python -m reasonix_computer_use` MCP 进程退出。新的 Reasonix 工具调用会按当前
+版本重新启动服务。
 
-维护者生成自包含发行包：
+Reasonix 的 Git/本地安装不会执行仓库中的第三方安装脚本，这是平台安全边界。
+不希望配置 Python 环境的用户应使用 Windows 自包含发行包。
+
+## Windows 发行包
+
+维护者在 Windows x64 构建机执行：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build_release.ps1
 ```
 
-脚本在构建机下载 Windows 嵌入式 Python，将所有依赖安装到包内 `runtime`，并生成可直接安装的 ZIP。最终用户只需解压或交给 Reasonix 安装，不运行 pip。
+构建输出包括：
+
+```text
+dist/reasonix-computer-use-<版本>-windows-x64.zip
+dist/reasonix-computer-use-<版本>-windows-x64.zip.sha256
+```
+
+脚本会读取 `reasonix-plugin.json` 中的版本，下载 Windows 嵌入式 Python，将全部运行
+依赖安装到包内，生成第三方包清单，执行导入和 MCP 初始化检查，最后输出 ZIP 与
+SHA-256。推送 `v<版本>` 标签时，GitHub Actions 会构建并发布这些文件；也可以在
+Actions 页面手动构建但不创建 Release。
 
 ## 诊断
 
@@ -132,7 +182,7 @@ python -m pytest -q
 python -m reasonix_computer_use.session_start
 ```
 
-Alpha.2 当前包含 37 项自动测试，覆盖动作 schema、物理坐标、revision、
+Alpha.2 当前包含 40 项自动测试，覆盖动作 schema、物理坐标、revision、
 UIA/OCR/视觉回退、Unicode 输入、WebView ComboBox、剪贴板恢复、熔断和
 Shell 逃逸阻断。
 
@@ -149,4 +199,5 @@ Shell 逃逸阻断。
 
 ## 当前范围
 
-0.8.0-alpha.2 只支持 Windows 10/11。macOS、Linux、跨应用长链自治、主动巡检、语音无障碍和自动探索软件菜单不在本版本范围内。
+0.8.0-alpha.2 只正式打包 Windows 10/11 x64。macOS 和 Linux 将在 Windows 版本稳定
+后适配；跨应用长链自治、主动巡检、语音无障碍和自动探索软件菜单不在本版本范围内。
