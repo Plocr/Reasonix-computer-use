@@ -6,6 +6,7 @@ import ctypes
 import ctypes.wintypes
 from reasonix_computer_use.mcp_server import register_tool
 from reasonix_computer_use.utils import parse_result
+from reasonix_computer_use.windows import physical_pixel_context
 
 
 # Constants for mouse events
@@ -57,7 +58,14 @@ async def computer_mouse_move(args: dict) -> str:
     duration = args.get("duration", 0.1)
     
     try:
-        ctypes.windll.user32.SetCursorPos(x, y)
+        with physical_pixel_context():
+            if not ctypes.windll.user32.SetCursorPos(x, y):
+                raise ctypes.WinError()
+            actual = ctypes.wintypes.POINT()
+            if not ctypes.windll.user32.GetCursorPos(ctypes.byref(actual)):
+                raise ctypes.WinError()
+            if (actual.x, actual.y) != (x, y):
+                raise OSError(f"鼠标物理坐标校验失败: requested=({x},{y}), actual=({actual.x},{actual.y})")
         time.sleep(max(0.05, duration))
         return parse_result({
             "status": "ok",
@@ -110,7 +118,14 @@ async def computer_mouse_click(args: dict) -> str:
     try:
         # Move cursor first if coordinates provided
         if x is not None and y is not None:
-            ctypes.windll.user32.SetCursorPos(x, y)
+            with physical_pixel_context():
+                if not ctypes.windll.user32.SetCursorPos(x, y):
+                    raise ctypes.WinError()
+                actual = ctypes.wintypes.POINT()
+                if not ctypes.windll.user32.GetCursorPos(ctypes.byref(actual)):
+                    raise ctypes.WinError()
+                if (actual.x, actual.y) != (x, y):
+                    raise OSError("鼠标未到达请求的物理像素坐标")
             time.sleep(0.05)
         
         # Determine button flags

@@ -45,7 +45,7 @@ ACTION_MAP = {
     "Edit": ["set_value", "focus"], "Document": ["set_value", "focus"],
     "CheckBox": ["toggle"], "RadioButton": ["select"], "ListItem": ["select"],
     "TreeItem": ["select", "expand", "collapse"], "DataItem": ["select"],
-    "ComboBox": ["expand", "collapse"], "TabItem": ["select"],
+    "ComboBox": ["focus", "click", "set_value", "expand", "collapse"], "TabItem": ["select"],
 }
 
 
@@ -311,6 +311,7 @@ def _click(item: dict):
         "value": {"type": "string"}, "verify": {"type": "boolean", "default": True}},
         "required": ["ref", "action"]})
 async def computer_act(args: dict) -> str:
+    value_pattern = None
     try:
         record = _resolve_ref(args["ref"])
     except KeyError:
@@ -322,7 +323,8 @@ async def computer_act(args: dict) -> str:
         if action == "invoke":
             _pattern(element, constants.UIA_InvokePatternId).QueryInterface(constants.IUIAutomationInvokePattern).Invoke()
         elif action == "set_value":
-            _pattern(element, constants.UIA_ValuePatternId).QueryInterface(constants.IUIAutomationValuePattern).SetValue(args.get("value", ""))
+            value_pattern = _pattern(element, constants.UIA_ValuePatternId).QueryInterface(constants.IUIAutomationValuePattern)
+            value_pattern.SetValue(args.get("value", ""))
         elif action == "toggle":
             _pattern(element, constants.UIA_TogglePatternId).QueryInterface(constants.IUIAutomationTogglePattern).Toggle()
         elif action == "select":
@@ -350,6 +352,14 @@ async def computer_act(args: dict) -> str:
     if args.get("verify", True):
         current = _properties(element, prefer_cached=False)
         result["verified"] = bool(current.get("enabled") and not current.get("offscreen"))
+        if action == "set_value" and value_pattern is not None:
+            try:
+                result["verified"] = result["verified"] and value_pattern.CurrentValue == args.get("value", "")
+            except Exception:
+                result["verified"] = False
+            if not result["verified"]:
+                return tool_error("value_not_set", "UIA ValuePattern 未能验证输入内容", retryable=True,
+                                  fallback="保持焦点并使用键盘输入")
         result["element"] = _compact(current, record.ref)
     return parse_result(result)
 

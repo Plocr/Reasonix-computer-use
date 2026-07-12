@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+from contextlib import contextmanager
 from ctypes import wintypes
 from dataclasses import dataclass
 
@@ -44,6 +45,27 @@ def enable_dpi_awareness() -> str:
 DPI_AWARENESS = enable_dpi_awareness()
 
 
+@contextmanager
+def physical_pixel_context():
+    """Keep Win32 coordinates in per-monitor physical pixels on this thread."""
+    previous = None
+    try:
+        setter = user32.SetThreadDpiAwarenessContext
+        setter.restype = ctypes.c_void_p
+        setter.argtypes = [ctypes.c_void_p]
+        previous = setter(ctypes.c_void_p(-4))
+    except (AttributeError, OSError):
+        previous = None
+    try:
+        yield
+    finally:
+        if previous:
+            try:
+                user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(previous))
+            except (AttributeError, OSError):
+                pass
+
+
 def _window_text(hwnd: int) -> str:
     length = user32.GetWindowTextLengthW(hwnd)
     buffer = ctypes.create_unicode_buffer(length + 1)
@@ -60,14 +82,15 @@ def _class_name(hwnd: int) -> str:
 def get_window_rect(hwnd: int) -> tuple[int, int, int, int]:
     """Return the DWM visible frame in physical pixels, with Win32 fallback."""
     rect = wintypes.RECT()
-    try:
-        dwmapi = ctypes.windll.dwmapi
-        if dwmapi.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(rect), ctypes.sizeof(rect)) == 0:
-            return rect.left, rect.top, rect.right, rect.bottom
-    except (AttributeError, OSError):
-        pass
-    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-        raise ctypes.WinError()
+    with physical_pixel_context():
+        try:
+            dwmapi = ctypes.windll.dwmapi
+            if dwmapi.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(rect), ctypes.sizeof(rect)) == 0:
+                return rect.left, rect.top, rect.right, rect.bottom
+        except (AttributeError, OSError):
+            pass
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            raise ctypes.WinError()
     return rect.left, rect.top, rect.right, rect.bottom
 
 

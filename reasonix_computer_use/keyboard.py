@@ -76,23 +76,46 @@ KEYEVENTF_UNICODE = 0x0004
 KEYEVENTF_KEYUP = 0x0002
 
 
+ULONG_PTR = ctypes.c_size_t
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG), ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD), ("dwExtraInfo", ULONG_PTR),
+    ]
+
+
 class KEYBDINPUT(ctypes.Structure):
     _fields_ = [
         ("wVk", wintypes.WORD),
         ("wScan", wintypes.WORD),
         ("dwFlags", wintypes.DWORD),
         ("time", wintypes.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+        ("dwExtraInfo", ULONG_PTR),
     ]
+
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD), ("wParamH", wintypes.WORD)]
+
+
+class INPUT_UNION(ctypes.Union):
+    _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT), ("hi", HARDWAREINPUT)]
 
 
 class INPUT(ctypes.Structure):
-    class _INPUT(ctypes.Union):
-        _fields_ = [("ki", KEYBDINPUT)]
-    _fields_ = [
-        ("type", wintypes.DWORD),
-        ("_input", _INPUT),
-    ]
+    _anonymous_ = ("data",)
+    _fields_ = [("type", wintypes.DWORD), ("data", INPUT_UNION)]
+
+
+_SendInput = ctypes.windll.user32.SendInput
+_SendInput.argtypes = (wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
+_SendInput.restype = wintypes.UINT
+
+CF_UNICODETEXT = 13
+GMEM_MOVEABLE = 0x0002
 
 
 # Pre-allocate reusable input structures
@@ -104,12 +127,27 @@ def _create_unicode_input(char_code: int, key_up: bool = False) -> INPUT:
     
     inp = INPUT()
     inp.type = INPUT_KEYBOARD
-    inp._input.ki.wVk = 0
-    inp._input.ki.wScan = char_code
-    inp._input.ki.dwFlags = flags
-    inp._input.ki.time = 0
-    inp._input.ki.dwExtraInfo = ctypes.pointer(ctypes.c_ulong(0))
+    inp.ki = KEYBDINPUT(0, char_code, flags, 0, 0)
     return inp
+
+
+def _unicode_units(text: str) -> list[int]:
+    raw = text.encode("utf-16-le", errors="surrogatepass")
+    return [int.from_bytes(raw[index:index + 2], "little") for index in range(0, len(raw), 2)]
+
+
+def send_unicode_text(text: str, interval: float = 0.0) -> int:
+    """Inject UTF-16 key events and fail if Windows accepts fewer than requested."""
+    sent_units = 0
+    for unit in _unicode_units(text):
+        events = (INPUT * 2)(_create_unicode_input(unit), _create_unicode_input(unit, key_up=True))
+        inserted = int(_SendInput(2, events, ctypes.sizeof(INPUT)))
+        if inserted != 2:
+            raise ctypes.WinError(ctypes.get_last_error() or 5)
+        sent_units += 1
+        if interval:
+            time.sleep(interval)
+    return sent_units
 
 
 def _send_key(vk_code: int, key_up: bool = False):
@@ -117,7 +155,106 @@ def _send_key(vk_code: int, key_up: bool = False):
     flags = 0
     if key_up:
         flags |= 0x0002  # KEYEVENTF_KEYUP
-    ctypes.windll.user32.keybd_event(0, vk_code, flags, 0)
+    # keybd_event expects the virtual-key code first. The old reversed order
+    # silently emitted VK=0, which made Enter and shortcuts appear successful.
+    ctypes.windll.user32.keybd_event(vk_code, 0, flags, 0)
+
+
+def _open_clipboard(retries: int = 20) -> None:
+    for _ in range(retries):
+        if ctypes.windll.user32.OpenClipboard(None):
+            return
+        time.sleep(0.01)
+    raise ctypes.WinError()
+
+
+def _set_clipboard_text(text: str) -> None:
+    encoded = text.encode("utf-16-le") + b"\x00\x00"
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+    ctypes.windll.user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    ctypes.windll.user32.SetClipboardData.restype = wintypes.HANDLE
+    handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(encoded))
+    if not handle:
+        raise ctypes.WinError()
+    locked = kernel32.GlobalLock(handle)
+    if not locked:
+        kernel32.GlobalFree(handle)
+        raise ctypes.WinError()
+    try:
+        ctypes.memmove(locked, encoded, len(encoded))
+    finally:
+        kernel32.GlobalUnlock(handle)
+    _open_clipboard()
+    try:
+        if not ctypes.windll.user32.EmptyClipboard():
+            raise ctypes.WinError()
+        if not ctypes.windll.user32.SetClipboardData(CF_UNICODETEXT, handle):
+            raise ctypes.WinError()
+        handle = None  # The clipboard owns the allocation after success.
+    finally:
+        ctypes.windll.user32.CloseClipboard()
+        if handle:
+            kernel32.GlobalFree(handle)
+
+
+def _release_com_pointer(pointer: ctypes.c_void_p) -> None:
+    if not pointer.value:
+        return
+    vtable = ctypes.cast(pointer, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtable[2])
+    release(pointer)
+
+
+def paste_unicode_text(text: str) -> bool:
+    """Paste once while preserving the complete pre-existing OLE clipboard."""
+    ole32 = ctypes.OleDLL("ole32")
+    ole32.OleInitialize.argtypes = [ctypes.c_void_p]
+    ole32.OleInitialize.restype = ctypes.c_long
+    ole32.OleGetClipboard.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+    ole32.OleGetClipboard.restype = ctypes.c_long
+    ole32.OleSetClipboard.argtypes = [ctypes.c_void_p]
+    ole32.OleSetClipboard.restype = ctypes.c_long
+    initialized = ole32.OleInitialize(None)
+    original = ctypes.c_void_p()
+    got_original = ole32.OleGetClipboard(ctypes.byref(original)) >= 0 and bool(original.value)
+    if not got_original:
+        if initialized in (0, 1):
+            ole32.OleUninitialize()
+        raise OSError("无法保存当前剪贴板，已取消粘贴回退")
+    restored = False
+    try:
+        _set_clipboard_text(text)
+        _send_key(VK_CONTROL, key_up=False)
+        _send_key(0x41, key_up=False)
+        _send_key(0x41, key_up=True)
+        _send_key(VK_CONTROL, key_up=True)
+        time.sleep(0.03)
+        _send_key(VK_CONTROL, key_up=False)
+        _send_key(0x56, key_up=False)
+        _send_key(0x56, key_up=True)
+        _send_key(VK_CONTROL, key_up=True)
+        time.sleep(0.15)
+        if ole32.OleSetClipboard(original) < 0:
+            raise OSError("输入已粘贴，但恢复原剪贴板失败")
+        ole32.OleFlushClipboard()
+        restored = True
+        return True
+    finally:
+        if not restored:
+            try:
+                if ole32.OleSetClipboard(original) >= 0:
+                    ole32.OleFlushClipboard()
+            except Exception:
+                pass
+        _release_com_pointer(original)
+        if initialized in (0, 1):
+            ole32.OleUninitialize()
 
 
 @register_tool(
@@ -247,22 +384,13 @@ async def computer_keyboard_type(args: dict) -> str:
     interval = args.get("interval", 0.02)
     
     try:
-        for char in text:
-            char_code = ord(char)
-            
-            # Key down
-            inp = _create_unicode_input(char_code, key_up=False)
-            ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
-            
-            # Key up
-            inp = _create_unicode_input(char_code, key_up=True)
-            ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
-            
-            time.sleep(interval)
+        units = send_unicode_text(text, interval)
         
         return parse_result({
             "status": "ok",
-            "text_length": len(text)
+            "text_length": len(text),
+            "utf16_units": units,
+            "method": "send_input"
         })
     except Exception as e:
         return parse_result({"error": str(e)})

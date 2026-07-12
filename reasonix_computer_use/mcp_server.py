@@ -8,6 +8,8 @@ import sys
 import time
 from typing import Any
 
+from . import __version__
+
 # Reasonix speaks UTF-8 over stdio. Windows may otherwise inherit a GBK
 # console encoding and crash the server when a tool returns CJK or symbols.
 for _stream in (sys.stdin, sys.stdout, sys.stderr):
@@ -79,7 +81,7 @@ async def handle_initialize(request_id: Any) -> dict[str, Any]:
         },
         "serverInfo": {
             "name": "reasonix-computer-use",
-            "version": "0.8.0-alpha.0",
+            "version": __version__,
         },
     })
 

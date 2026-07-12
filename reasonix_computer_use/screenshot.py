@@ -18,7 +18,7 @@ from reasonix_computer_use.utils import parse_result
 from reasonix_computer_use.utils import tool_error
 from reasonix_computer_use.windows import (
     DPI_AWARENESS, activate_window, get_window_rect, list_windows, resolve_window,
-    virtual_screen, window_dpi,
+    physical_pixel_context, virtual_screen, window_dpi,
 )
 
 
@@ -297,7 +297,8 @@ def _capture_window(window_id: str, activate: bool = True):
     width, height = right - left, bottom - top
     if width <= 0 or height <= 0:
         raise ValueError("Window has an empty capture rectangle")
-    screenshot = pyautogui.screenshot(region=(left, top, width, height))
+    with physical_pixel_context():
+        screenshot = pyautogui.screenshot(region=(left, top, width, height))
     return screenshot, info
 
 

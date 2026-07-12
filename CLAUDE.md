@@ -5,7 +5,10 @@ Windows 桌面任务只使用四个工具：`computer_app`、`computer_state`、
 1. 启动应用直接调用 `computer_app(operation="launch", query="应用名")`。仅在名称歧义时 search，不得用 Shell 搜索磁盘。
 2. 调用一次 `computer_state`。优先使用 UIA ref，其次 OCR 文字；仅当 `source=visual` 时理解响应内附图片。
 3. 使用最新 revision 调用 `computer_action`，确定的连续动作合并为一批，最多五个。
+   `actions[]` 必须使用 `type` 字段，例如 `{"type":"click_ref","ref":"e1"}`、`{"type":"type","text":"内容"}`、`{"type":"press","keys":["ENTER"]}`。
 4. 相同 revision 不重复动作；失败后按工具给出的 `next_hint` 升级策略。
+   返回 `blocked=true` 时立即停止，不得切换 Shell、浏览器或另开流程重试原任务。
 5. 保存 launch 返回的 `window_id`，聚焦和关闭时直接复用，不要额外 list_running。
 6. 网页 DOM 操作交给 `chrome-devtools`；本插件只处理浏览器窗口和系统文件选择器。
 7. 密码、验证码、UAC、支付、删除、协议确认和不可逆操作必须让用户接管或确认。
+8. `computer_system(command)` 只允许单条只读诊断，禁止用 PowerShell/SendKeys/Win32 脚本替代 GUI 工具。

@@ -34,6 +34,7 @@ class WindowContext:
     revision_no: int = 0
     revision: str = "r0"
     state_hash: str = ""
+    source_hashes: dict[str, str] = field(default_factory=dict)
     source: str = "none"
     elements: list[dict[str, Any]] = field(default_factory=list)
     image_hash: str = ""
@@ -42,6 +43,11 @@ class WindowContext:
     failure_count: int = 0
     strategy_level: int = 1
     action_signatures: set[str] = field(default_factory=set)
+    invalid_action_count: int = 0
+    no_progress_count: int = 0
+    hard_blocked: bool = False
+    state_reads_without_action: int = 0
+    focused_ref: str = ""
 
     def info(self) -> WindowInfo:
         if user32.IsWindow(self.hwnd):
@@ -61,7 +67,9 @@ class WindowContext:
 
     def update(self, state: Any, source: str, elements: list[dict[str, Any]] | None = None) -> bool:
         digest = _hash(state)
-        changed = digest != self.state_hash
+        previous = self.source_hashes.get(source)
+        changed = (not self.state_hash) or (previous is not None and digest != previous)
+        self.source_hashes[source] = digest
         if changed:
             self.revision_no += 1
             self.revision = f"r{self.revision_no}-{digest[:6]}"
@@ -70,12 +78,18 @@ class WindowContext:
             self.failure_hash = ""
             self.strategy_level = 1
             self.action_signatures.clear()
+            self.invalid_action_count = 0
+            self.no_progress_count = 0
+            self.hard_blocked = False
+            self.state_reads_without_action = 0
+            self.focused_ref = ""
         self.source = source
         if elements is not None:
             self.elements = elements
         return changed
 
     def fail(self) -> int:
+        self.no_progress_count += 1
         if self.failure_hash == self.state_hash:
             self.failure_count += 1
         else:
@@ -84,7 +98,28 @@ class WindowContext:
         if self.failure_count >= 2:
             self.strategy_level = min(self.strategy_level + 1, len(STRATEGIES) - 1)
             self.failure_count = 0
+        if self.no_progress_count >= 4:
+            self.hard_blocked = True
         return self.strategy_level
+
+    def invalid_action(self) -> bool:
+        self.invalid_action_count += 1
+        self.no_progress_count += 1
+        if self.invalid_action_count >= 2 or self.no_progress_count >= 4:
+            self.hard_blocked = True
+        return self.hard_blocked
+
+    def succeed(self) -> None:
+        self.invalid_action_count = 0
+        self.no_progress_count = 0
+        self.hard_blocked = False
+        self.state_reads_without_action = 0
+
+    def state_read(self) -> bool:
+        self.state_reads_without_action += 1
+        if self.state_reads_without_action > 2:
+            self.hard_blocked = True
+        return self.hard_blocked
 
 
 class WindowRegistry:

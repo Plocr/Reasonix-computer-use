@@ -16,7 +16,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .keyboard import VK_MAP, _send_key, computer_keyboard_press, computer_keyboard_type
+from . import __version__
+from .keyboard import VK_MAP, _send_key, computer_keyboard_press, computer_keyboard_type, paste_unicode_text
 from .mcp_server import register_tool
 from .mouse import computer_mouse_click, computer_mouse_move, computer_mouse_scroll
 from .runtime import (REGISTRY, STRATEGIES, WindowContext, memory_candidates, remember_success,
@@ -264,6 +265,10 @@ def _image_digest(image) -> str:
 async def computer_state(args: dict) -> str:
     try:
         context = REGISTRY.get(str(args["window_id"]))
+        if context.hard_blocked:
+            return _ok(window=window_payload(context), revision=context.revision, source="none", elements=[],
+                       progress="连续无效动作已触发执行熔断", blocked=True,
+                       next_hint="停止工具调用并向用户报告当前阻断；新任务或重新启动应用后再继续")
         info = context.info()
         goal = str(args.get("goal", ""))
         limit = max(1, min(int(args.get("limit", DEFAULT_ELEMENTS)), MAX_ELEMENTS))
@@ -274,15 +279,17 @@ async def computer_state(args: dict) -> str:
         same_revision = args.get("since_revision") == context.revision
         cached_matches = _goal_matches(context.elements, goal) if same_revision else []
         if same_revision and context.source == "uia" and cached_matches and context.strategy_level < 2:
+            blocked = context.state_read()
             return _ok(window=window_payload(context, info), revision=context.revision, source="uia",
-                       unchanged=True, elements=[_bounded_element(item) for item in cached_matches[:limit]],
-                       progress="复用当前 revision 的 UIA 缓存", blocked=False,
-                       next_hint="不要重复观察；使用缓存 ref 执行动作")
+                       unchanged=True, elements=[] if blocked else [_bounded_element(item) for item in cached_matches[:limit]],
+                       progress="同一窗口连续观察未执行动作，已熔断" if blocked else "复用当前 revision 的 UIA 缓存",
+                       blocked=blocked, next_hint="停止重复观察并报告阻断" if blocked else "不要重复观察；使用缓存 ref 执行动作")
         if same_revision and context.source == "ocr" and cached_matches and context.strategy_level < 3:
+            blocked = context.state_read()
             return _ok(window=window_payload(context, info), revision=context.revision, source="ocr",
-                       unchanged=True, elements=[_bounded_element(item) for item in cached_matches[:limit]],
-                       progress="复用当前 revision 的 OCR 缓存", blocked=False,
-                       next_hint="使用 click_text，不调用外部视觉")
+                       unchanged=True, elements=[] if blocked else [_bounded_element(item) for item in cached_matches[:limit]],
+                       progress="同一窗口连续观察未执行动作，已熔断" if blocked else "复用当前 revision 的 OCR 缓存",
+                       blocked=blocked, next_hint="停止重复观察并报告阻断" if blocked else "使用 click_text，不调用外部视觉")
         try:
             if same_revision and context.source in ("uia", "ocr"):
                 raise RuntimeError("cached_revision_has_no_matching_target")
@@ -290,19 +297,23 @@ async def computer_state(args: dict) -> str:
             all_elements = result.get("elements", [])
             elements = _relevant(all_elements, goal, limit)
             state = semantic_state(info, all_elements)
-            context.update(state, "uia", all_elements)
+            changed = context.update(state, "uia", all_elements)
             if memory:
                 labels = {str(item.get("name", "")).casefold() for item in all_elements}
                 memory = [item for item in memory if str(item.get("action", {}).get("text", "")).casefold() in labels]
             if memory:
+                blocked = not changed and context.state_read()
                 return _ok(window=window_payload(context, info), revision=context.revision, source="memory",
-                           elements=elements, memory_hits=len(memory), progress="已命中该应用的验证成功路径",
-                           blocked=False, next_hint="优先使用返回的 ref 调用 computer_action")
+                           elements=[] if blocked else elements, memory_hits=len(memory),
+                           progress="同一状态重复观察已熔断" if blocked else "已命中该应用的验证成功路径",
+                           blocked=blocked, next_hint="停止重复观察并报告阻断" if blocked else "优先使用返回的 ref 调用 computer_action")
             relevant_names = [str(item.get("name", "")) for item in elements]
             if context.strategy_level < 2 and elements and (mode == "uia" or any(term in " ".join(relevant_names).casefold() for term in _goal_terms(goal))):
+                blocked = not changed and context.state_read()
                 return _ok(window=window_payload(context, info), revision=context.revision, source="uia",
-                           elements=elements, progress="UIA 已找到相关控件", blocked=False,
-                           next_hint="使用 click_ref；无需截图")
+                           elements=[] if blocked else elements,
+                           progress="同一状态重复观察已熔断" if blocked else "UIA 已找到相关控件", blocked=blocked,
+                           next_hint="停止重复观察并报告阻断" if blocked else "使用 click_ref；无需截图")
         except Exception as exc:
             if str(exc) != "cached_revision_has_no_matching_target":
                 errors["uia"] = str(exc)[:300]
@@ -311,7 +322,11 @@ async def computer_state(args: dict) -> str:
                 ocr_items = _ocr_elements(hex(info.hwnd), goal, limit)
                 if ocr_items and context.strategy_level < 3:
                     ocr_state = {"window": info.title, "texts": [(item["name"], item["rect"]) for item in ocr_items]}
-                    context.update(ocr_state, "ocr", ocr_items)
+                    changed = context.update(ocr_state, "ocr", ocr_items)
+                    if not changed and context.state_read():
+                        return _ok(window=window_payload(context, info), revision=context.revision, source="none", elements=[],
+                                   unchanged=True, progress="OCR 状态连续不变且未执行动作，已熔断",
+                                   blocked=True, next_hint="停止重复观察并请求用户介入")
                     return _ok(window=window_payload(context, info), revision=context.revision, source="ocr",
                                elements=ocr_items, progress="本地 OCR 已找到相关文字", blocked=False,
                                next_hint="使用 click_text；不会调用外部视觉模型")
@@ -363,8 +378,13 @@ def _parse_result(value: str) -> dict[str, Any]:
 def _point(context: WindowContext, action: dict[str, Any]) -> tuple[int, int]:
     x, y = int(action["x"]), int(action["y"])
     left, top, right, bottom = context.info().rect
-    if action.get("relative", False):
+    coordinate_space = action.get("coordinate_space", "window")
+    if action.get("relative") is False:
+        coordinate_space = "screen"
+    if coordinate_space == "window":
         x, y = left + x, top + y
+    elif coordinate_space != "screen":
+        raise ValueError("coordinate_space 必须是 window 或 screen")
     if not (left <= x < right and top <= y < bottom):
         raise ValueError("坐标不在当前窗口物理像素范围内")
     return x, y
@@ -390,7 +410,10 @@ async def _click_ref(context: WindowContext, ref: str) -> dict[str, Any]:
         return {"status": "error", "code": "stale_ref", "message": "ref 不属于当前 revision"}
     actions = element.get("actions", [])
     semantic = "invoke"
-    for candidate in ("invoke", "toggle", "select", "expand", "focus", "click"):
+    role = str(element.get("role", ""))
+    candidates = (("focus", "click", "set_value", "expand") if role in ("Edit", "Document", "ComboBox")
+                  else ("invoke", "toggle", "select", "expand", "focus", "click"))
+    for candidate in candidates:
         if candidate in actions:
             semantic = candidate
             break
@@ -441,6 +464,18 @@ async def _execute(context: WindowContext, action: dict[str, Any]) -> dict[str, 
         direction = action.get("direction", "down" if amount >= 0 else "up")
         return _parse_result(await computer_mouse_scroll({"direction": direction, "lines": abs(amount)}))
     if kind == "type":
+        target_ref = str(action.get("_target_ref") or context.focused_ref or "")
+        if target_ref:
+            result = _parse_result(await uia_act({"ref": target_ref, "action": "set_value",
+                                                  "value": str(action.get("text", "")), "verify": True}))
+            if result.get("status") == "ok":
+                result["method"] = "uia_value"
+                return result
+        try:
+            activate_window(context.hwnd)
+        except OSError:
+            if user32.GetForegroundWindow() != context.hwnd:
+                return {"status": "error", "code": "focus_denied", "message": "目标窗口未获得键盘焦点"}
         return _parse_result(await computer_keyboard_type({"text": str(action.get("text", "")),
                                                             "interval": min(float(action.get("interval", 0.01)), 0.1)}))
     if kind == "press":
@@ -459,6 +494,35 @@ async def _execute(context: WindowContext, action: dict[str, Any]) -> dict[str, 
         await asyncio.sleep(max(0, min(float(action.get("seconds", 0.5)), 10)))
         return {"status": "ok", "action": "wait"}
     return {"status": "error", "code": "unknown_action", "message": f"不支持的动作：{kind}"}
+
+
+def _normalize_action(action: Any) -> dict[str, Any]:
+    """Accept common pre-0.8 guesses, while keeping `type` canonical."""
+    if not isinstance(action, dict):
+        return {}
+    normalized = dict(action)
+    if not normalized.get("type") and normalized.get("action"):
+        legacy = str(normalized["action"])
+        if legacy in ("click", "click_ref") and normalized.get("ref"):
+            normalized["type"] = "click_ref"
+        elif legacy == "click" and "x" in normalized and "y" in normalized:
+            normalized["type"] = "click_point"
+        elif legacy in ("type", "press", "click_text"):
+            normalized["type"] = legacy
+    return normalized
+
+
+def _verify_typed_text(context: WindowContext, action: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("method") == "uia_value":
+        return {"verified": True, "method": "uia-value"}
+    text = str(action.get("text", ""))
+    if not text:
+        return {"verified": True, "method": "empty-input"}
+    try:
+        matched = bool(find_text(hex(context.hwnd), text, False, 1).get("matches"))
+        return {"verified": matched, "method": "ocr-text"}
+    except Exception as exc:
+        return {"verified": False, "method": "ocr-text", "error": str(exc)[:160]}
 
 
 def _adopt_new_window(context: WindowContext, old_handles: set[int]) -> None:
@@ -531,11 +595,33 @@ def _verify(context: WindowContext, expect: dict[str, Any], changed: bool) -> di
 
 @register_tool(
     name="computer_action",
-    description="在最新窗口 revision 上批量执行最多五个动作。优先 UIA，其次 OCR，坐标仅用于视觉保底；每步失败立即停止。",
+    description='在最新 revision 上执行最多五步。actions 每项必须使用 type 字段，例如 {"type":"click_ref","ref":"e1"}、{"type":"type","text":"周杰伦"}、{"type":"press","keys":["ENTER"]}。视觉点是窗口内物理像素坐标。',
     schema={"type": "object", "properties": {
         "window_id": {"type": "string"}, "revision": {"type": "string"},
-        "actions": {"type": "array", "minItems": 1, "maxItems": 5, "items": {"type": "object"}},
-        "expect": {"type": "object"}}, "required": ["window_id", "revision", "actions"]})
+        "actions": {"type": "array", "minItems": 1, "maxItems": 5, "items": {
+            "type": "object",
+            "properties": {
+                "type": {"type": "string", "description": "动作种类，不要使用 action 或 command 字段。", "enum": ["click_ref", "click_text", "click_point", "move", "hover", "double_click", "right_click", "middle_click", "drag", "scroll", "type", "press", "key_down", "key_up", "wait"]},
+                "ref": {"type": "string"}, "text": {"type": "string"},
+                "x": {"type": "integer"}, "y": {"type": "integer"},
+                "from_x": {"type": "integer"}, "from_y": {"type": "integer"},
+                "to_x": {"type": "integer"}, "to_y": {"type": "integer"},
+                "coordinate_space": {"type": "string", "enum": ["window", "screen"], "default": "window"},
+                "keys": {"type": "array", "items": {"type": "string"}},
+                "key": {"type": "string"}, "amount": {"type": "integer"},
+                "direction": {"type": "string", "enum": ["up", "down"]},
+                "seconds": {"type": "number"}, "duration": {"type": "number"},
+                "interval": {"type": "number"}, "steps": {"type": "integer"},
+                "exact": {"type": "boolean"},
+                "index": {"type": "integer"}, "confirmed": {"type": "boolean"},
+                "purpose": {"type": "string"}
+            },
+            "required": ["type"]
+        }},
+        "expect": {"type": "object", "properties": {
+            "text_present": {"type": "string"}, "text_absent": {"type": "string"},
+            "window_title_contains": {"type": "string"}
+        }}}, "required": ["window_id", "revision", "actions"]})
 async def computer_action(args: dict) -> str:
     try:
         context = REGISTRY.get(str(args["window_id"]))
@@ -544,6 +630,16 @@ async def computer_action(args: dict) -> str:
         actions = args.get("actions")
         if not isinstance(actions, list) or not 1 <= len(actions) <= MAX_BATCH:
             return tool_error("invalid_batch", "actions 必须包含 1 到 5 个动作")
+        actions = [_normalize_action(action) for action in actions]
+        supported = {"click_ref", "click_text", "click_point", "move", "hover", "double_click",
+                     "right_click", "middle_click", "drag", "scroll", "type", "press", "key_down",
+                     "key_up", "wait"}
+        if any(action.get("type") not in supported for action in actions):
+            blocked = context.invalid_action()
+            return parse_result({"status": "error", "code": "invalid_action_shape", "blocked": blocked,
+                                 "progress": "动作未执行",
+                                 "message": "actions 每项必须使用 type；例如 {\"type\":\"click_ref\",\"ref\":\"e1\"}",
+                                 "next_hint": "按示例修正一次；blocked=true 时停止并报告"})
         for action in actions:
             if _action_sensitive(context, action):
                 return tool_error("confirmation_required", "检测到密码、验证码、支付、删除或协议操作，需要用户确认或接管")
@@ -560,7 +656,10 @@ async def computer_action(args: dict) -> str:
             except Exception:
                 pass
         old_handles = {item.hwnd for item in list_windows()}
+        last_edit_ref = ""
         for index, action in enumerate(actions):
+            if action.get("type") == "type" and last_edit_ref:
+                action["_target_ref"] = last_edit_ref
             memory_action = dict(action)
             if action.get("type") == "click_ref":
                 element = next((item for item in context.elements if item.get("ref") == action.get("ref")), None)
@@ -582,10 +681,36 @@ async def computer_action(args: dict) -> str:
             if result.get("status") != "ok":
                 level = context.fail()
                 return parse_result({"status": "error", "code": "batch_stopped", "results": results,
-                                     "progress": "动作失败，后续动作未执行", "blocked": level >= 3,
+                                     "progress": "动作失败，后续动作未执行", "blocked": context.hard_blocked or level >= 3,
                                      "next_hint": f"重新观察并升级到 {STRATEGIES[level]}"})
+            if action.get("type") == "click_ref":
+                target = next((item for item in context.elements if item.get("ref") == action.get("ref")), {})
+                last_edit_ref = str(action.get("ref")) if target.get("role") in ("Edit", "Document", "ComboBox") else ""
+                context.focused_ref = last_edit_ref
+            elif action.get("type") not in ("wait",):
+                if action.get("type") != "type":
+                    last_edit_ref = ""
             _adopt_new_window(context, old_handles)
             await _wait_stable(context)
+            if action.get("type") == "type":
+                input_verification = _verify_typed_text(context, action, result)
+                if not input_verification.get("verified") and result.get("method") == "send_input":
+                    try:
+                        paste_unicode_text(str(action.get("text", "")))
+                        await _wait_stable(context)
+                        input_verification = _verify_typed_text(
+                            context, action, {"method": "clipboard_paste"})
+                        if input_verification.get("verified"):
+                            results[-1]["method"] = "clipboard_paste"
+                            results[-1]["fallback_used"] = True
+                    except Exception as exc:
+                        input_verification = {"verified": False, "method": "clipboard-paste",
+                                              "error": str(exc)[:160]}
+                if not input_verification.get("verified"):
+                    level = context.fail()
+                    return parse_result({"status": "error", "code": "input_not_verified", "results": results,
+                                         "verification": input_verification, "progress": "输入 API 已调用，但目标窗口未出现文字，后续动作已停止",
+                                         "blocked": context.hard_blocked or level >= 3, "next_hint": "重新观察一次以确认焦点；不要重复盲目键入"})
         changed = _refresh_semantic(context)
         if needs_pixel_verification and before_pixel:
             try:
@@ -598,10 +723,11 @@ async def computer_action(args: dict) -> str:
             level = context.fail()
             return parse_result({"status": "error", "code": "verification_failed", "results": results,
                                  "verification": verification, "revision": context.revision,
-                                 "progress": "动作已执行但预期状态未出现", "blocked": level >= 3,
+                                 "progress": "动作已执行但预期状态未出现", "blocked": context.hard_blocked or level >= 3,
                                  "next_hint": f"调用 computer_state，监督器将升级到 {STRATEGIES[level]}"})
         for action in memory_actions:
             remember_success(context, action, before, context.state_hash)
+        context.succeed()
         return _ok(window=window_payload(context), revision=context.revision, results=results,
                    verification=verification, progress="动作已完成并通过本地验证", blocked=False,
                    next_hint="目标已完成则停止；否则用最新 revision 继续 computer_state/computer_action")
@@ -611,9 +737,23 @@ async def computer_action(args: dict) -> str:
         return tool_error("action_failed", str(exc), retryable=True)
 
 
-READ_ONLY_COMMANDS = ("where ", "where.exe ", "get-", "dir ", "ls ", "type ", "whoami", "systeminfo", "tasklist")
+READ_ONLY_COMMANDS = ("where", "where.exe", "get-command", "get-process", "get-ciminstance",
+                      "get-item", "get-childitem", "gci", "test-path", "resolve-path",
+                      "dir", "ls", "type", "whoami", "systeminfo", "tasklist")
 DANGEROUS_COMMANDS = ("remove-item", " del ", "erase ", "format ", "shutdown", "restart-computer", "stop-process",
                       "reg add", "reg delete", "invoke-expression", "iex ", "rm ")
+GUI_SCRIPT_MARKERS = ("sendkeys", "sendwait", "mouse_event", "setcursorpos", "user32", "add-type",
+                      "wscript.shell", "setforegroundwindow", "keybd_event", "sendinput")
+
+
+def _safe_read_only_command(command: str) -> bool:
+    lowered = command.casefold().strip()
+    if not lowered or any(marker in command for marker in (";", "|", "&", ">", "<", "\n", "\r", "`", "$")):
+        return False
+    if any(marker in lowered for marker in ("-recurse", " /s", "-depth")):
+        return False
+    first = lowered.split(maxsplit=1)[0]
+    return first in READ_ONLY_COMMANDS
 
 
 def _file_operation(target: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -664,7 +804,7 @@ def _window_operation(target: str, params: dict[str, Any]) -> dict[str, Any]:
 
 @register_tool(
     name="computer_system",
-    description="查询或刷新系统画像，执行诊断、受控文件操作、窗口管理或受限命令。写入和不可逆操作必须显式确认。",
+    description="查询或刷新系统画像，执行诊断、受控文件操作和窗口管理。command 仅允许单条只读诊断，禁止用 PowerShell 模拟 GUI、鼠标或键盘。",
     schema={"type": "object", "properties": {
         "operation": {"type": "string", "enum": ["profile", "refresh", "diagnose", "file", "window", "command"]},
         "target": {"type": "string"}, "params": {"type": "object"}}, "required": ["operation"]})
@@ -684,7 +824,7 @@ async def computer_system(args: dict) -> str:
                        profile="system.md", index="system-index.json")
         if operation == "diagnose":
             index = ensure_index()
-            return _ok(version="0.8.0-alpha.0", platform_supported=os.name == "nt",
+            return _ok(version=__version__, platform_supported=os.name == "nt",
                        dpi_awareness=DPI_AWARENESS, virtual_screen=virtual_screen(),
                        displays=index.get("displays", []),
                        uia_available=importlib.util.find_spec("comtypes") is not None,
@@ -697,11 +837,16 @@ async def computer_system(args: dict) -> str:
         if operation == "command":
             command = target.strip()
             lowered = f" {command.casefold()} "
+            if any(marker in lowered for marker in GUI_SCRIPT_MARKERS):
+                return parse_result({"status": "error", "code": "gui_command_blocked", "blocked": True,
+                                     "message": "禁止通过 Shell 绕过 Computer Use 执行 GUI 输入",
+                                     "next_hint": "停止命令尝试；仅使用 computer_state/computer_action 或请求用户介入"})
             if any(word in lowered for word in DANGEROUS_COMMANDS):
                 return tool_error("command_blocked", "命令包含删除、终止进程或系统修改")
-            read_only = command.casefold().startswith(READ_ONLY_COMMANDS)
-            if not read_only and not params.get("confirmed"):
-                return tool_error("confirmation_required", "非只读命令需要 confirmed=true")
+            if not _safe_read_only_command(command):
+                return parse_result({"status": "error", "code": "command_not_read_only", "blocked": True,
+                                     "message": "Alpha 版本只允许无管道、无变量展开的单条只读诊断命令",
+                                     "next_hint": "停止 Shell 尝试；系统写入使用专用操作并由用户确认"})
             completed = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
                                        capture_output=True, timeout=min(float(params.get("timeout", 15)), 30),
                                        text=True, encoding="utf-8", errors="replace",

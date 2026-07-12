@@ -27,12 +27,22 @@ def test_only_four_domain_tools_are_public():
         assert asyncio.iscoroutinefunction(tool["handler"])
 
 
+def test_action_schema_exposes_canonical_type_and_coordinate_space():
+    from reasonix_computer_use import tools  # noqa: F401
+    from reasonix_computer_use.mcp_server import TOOLS
+
+    item = TOOLS["computer_action"]["inputSchema"]["properties"]["actions"]["items"]
+    assert item["required"] == ["type"]
+    assert "click_ref" in item["properties"]["type"]["enum"]
+    assert item["properties"]["coordinate_space"]["default"] == "window"
+
+
 @pytest.mark.asyncio
 async def test_mcp_initialize_and_list_report_08():
     from reasonix_computer_use.mcp_server import handle_initialize, handle_tools_list
 
     initialized = await handle_initialize(1)
-    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.0"
+    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.2"
     listed = await handle_tools_list(2)
     assert {tool["name"] for tool in listed["result"]["tools"]} == PUBLIC_TOOLS
 
@@ -65,6 +75,18 @@ def test_window_revision_changes_only_with_state():
     assert context.revision != first
 
 
+def test_switching_perception_channel_does_not_create_fake_revision():
+    from reasonix_computer_use.runtime import WindowContext
+
+    context = WindowContext("w1", 1)
+    context.update({"title": "A", "elements": ["button"]}, "uia")
+    revision = context.revision
+    assert context.update({"window": "A", "texts": ["button"]}, "ocr") is False
+    assert context.revision == revision
+    assert context.update({"window": "A", "texts": ["button"]}, "ocr") is False
+    assert context.update({"window": "A", "texts": ["new"]}, "ocr") is True
+
+
 def test_two_same_state_failures_escalate_strategy():
     from reasonix_computer_use.runtime import WindowContext
 
@@ -73,6 +95,58 @@ def test_two_same_state_failures_escalate_strategy():
     assert context.fail() == 1
     assert context.fail() == 2
     assert context.strategy_level == 2
+
+
+def test_two_invalid_actions_trip_window_circuit_breaker():
+    from reasonix_computer_use.runtime import WindowContext
+
+    context = WindowContext("w1", 1)
+    context.update({"title": "QQ音乐"}, "uia")
+    assert context.invalid_action() is False
+    assert context.invalid_action() is True
+    assert context.hard_blocked is True
+
+
+def test_third_observation_without_action_trips_circuit_breaker():
+    from reasonix_computer_use.runtime import WindowContext
+
+    context = WindowContext("w1", 1)
+    context.update({"title": "QQ音乐"}, "uia")
+    assert context.state_read() is False
+    assert context.state_read() is False
+    assert context.state_read() is True
+    context.succeed()
+    assert context.state_reads_without_action == 0
+    assert context.hard_blocked is False
+
+
+def test_visual_point_defaults_to_window_physical_pixels():
+    from reasonix_computer_use.domain_tools import _point
+    from reasonix_computer_use.runtime import WindowContext
+    from reasonix_computer_use.windows import WindowInfo
+
+    context = WindowContext("w1", 1)
+    context.info = lambda: WindowInfo(1, "A", "A", (-500, 200, 500, 900))
+    assert _point(context, {"x": 100, "y": 50}) == (-400, 250)
+    assert _point(context, {"x": -400, "y": 250, "coordinate_space": "screen"}) == (-400, 250)
+
+
+def test_send_unicode_text_rejects_silent_sendinput_failure(monkeypatch):
+    from reasonix_computer_use import keyboard
+
+    monkeypatch.setattr(keyboard, "_SendInput", lambda *_args: 0)
+    with pytest.raises(OSError):
+        keyboard.send_unicode_text("周")
+
+
+def test_keyboard_virtual_key_is_not_sent_as_scan_code(monkeypatch):
+    from reasonix_computer_use import keyboard
+
+    calls = []
+    monkeypatch.setattr(keyboard.ctypes.windll.user32, "keybd_event",
+                        lambda *args: calls.append(args))
+    keyboard._send_key(keyboard.VK_RETURN)
+    assert calls[0][:2] == (keyboard.VK_RETURN, 0)
 
 
 def test_uia_walk_uses_created_true_condition(monkeypatch):
@@ -344,6 +418,120 @@ async def test_action_stops_batch_on_first_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_action_accepts_legacy_click_shape_once(monkeypatch):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.runtime import WindowContext
+    from reasonix_computer_use.windows import WindowInfo
+
+    context = WindowContext("w1", 1)
+    context.update({"title": "A"}, "uia", [{"ref": "e1", "role": "Button", "name": "搜索"}])
+    context.info = lambda: WindowInfo(1, "A", "A", (0, 0, 500, 500))
+    monkeypatch.setattr(domain_tools.REGISTRY, "get", lambda _: context)
+    monkeypatch.setattr(domain_tools, "list_windows", lambda: [])
+    monkeypatch.setattr(domain_tools, "_wait_stable", lambda *_a, **_k: asyncio.sleep(0))
+    monkeypatch.setattr(domain_tools, "_refresh_semantic", lambda *_a: True)
+    monkeypatch.setattr(domain_tools, "window_payload", lambda *_a, **_k: {"id": "w1"})
+    monkeypatch.setattr(domain_tools, "remember_success", lambda *_a: None)
+    seen = []
+
+    async def execute(_context, action):
+        seen.append(action)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(domain_tools, "_execute", execute)
+    result = json.loads(await domain_tools.computer_action({
+        "window_id": "w1", "revision": context.revision,
+        "actions": [{"action": "click", "ref": "e1"}]
+    }))
+    assert result["status"] == "ok"
+    assert seen[0]["type"] == "click_ref"
+
+
+@pytest.mark.asyncio
+async def test_input_like_combobox_is_focused_instead_of_expanded(monkeypatch):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.runtime import WindowContext
+
+    context = WindowContext("w1", 1)
+    context.elements = [{"ref": "e1", "role": "ComboBox", "name": "Send a message",
+                         "actions": ["focus", "click", "set_value", "expand"]}]
+    calls = []
+
+    async def act(args):
+        calls.append(args)
+        return json.dumps({"status": "ok"})
+
+    monkeypatch.setattr(domain_tools, "uia_act", act)
+    result = await domain_tools._click_ref(context, "e1")
+    assert result["status"] == "ok"
+    assert calls[0]["action"] == "focus"
+
+
+@pytest.mark.asyncio
+async def test_failed_sendinput_uses_one_verified_clipboard_fallback(monkeypatch):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.runtime import WindowContext
+    from reasonix_computer_use.windows import WindowInfo
+
+    context = WindowContext("w1", 1)
+    context.update({"title": "WebView"}, "uia")
+    context.info = lambda: WindowInfo(1, "WebView", "Chrome_WidgetWin", (0, 0, 500, 500))
+    monkeypatch.setattr(domain_tools.REGISTRY, "get", lambda _: context)
+    monkeypatch.setattr(domain_tools, "list_windows", lambda: [])
+    monkeypatch.setattr(domain_tools, "activate_window", lambda *_a: None)
+    monkeypatch.setattr(domain_tools, "_wait_stable", lambda *_a, **_k: asyncio.sleep(0))
+    monkeypatch.setattr(domain_tools, "_refresh_semantic", lambda *_a: False)
+    monkeypatch.setattr(domain_tools, "window_payload", lambda *_a, **_k: {"id": "w1"})
+    monkeypatch.setattr(domain_tools, "remember_success", lambda *_a: None)
+
+    async def keyboard_type(_args):
+        return json.dumps({"status": "ok", "method": "send_input"})
+
+    checks = iter([{"matches": []}, {"matches": [{"text": "hello"}]}])
+    pasted = []
+    monkeypatch.setattr(domain_tools, "computer_keyboard_type", keyboard_type)
+    monkeypatch.setattr(domain_tools, "find_text", lambda *_a, **_k: next(checks))
+    monkeypatch.setattr(domain_tools, "paste_unicode_text", lambda text: pasted.append(text) or True)
+    result = json.loads(await domain_tools.computer_action({
+        "window_id": "w1", "revision": context.revision,
+        "actions": [{"type": "type", "text": "hello"}]
+    }))
+    assert result["status"] == "ok"
+    assert result["results"][0]["method"] == "clipboard_paste"
+    assert result["results"][0]["fallback_used"] is True
+    assert pasted == ["hello"]
+
+
+@pytest.mark.asyncio
+async def test_unverified_input_stops_following_keypress(monkeypatch):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.runtime import WindowContext
+    from reasonix_computer_use.windows import WindowInfo
+
+    context = WindowContext("w1", 1)
+    context.update({"title": "A"}, "uia")
+    context.info = lambda: WindowInfo(1, "A", "A", (0, 0, 500, 500))
+    monkeypatch.setattr(domain_tools.REGISTRY, "get", lambda _: context)
+    monkeypatch.setattr(domain_tools, "list_windows", lambda: [])
+    monkeypatch.setattr(domain_tools, "_wait_stable", lambda *_a, **_k: asyncio.sleep(0))
+    monkeypatch.setattr(domain_tools, "activate_window", lambda *_a: None)
+    monkeypatch.setattr(domain_tools, "find_text", lambda *_a, **_k: {"matches": []})
+    calls = []
+
+    async def keyboard_type(_args):
+        calls.append("type")
+        return json.dumps({"status": "ok", "method": "send_input"})
+
+    monkeypatch.setattr(domain_tools, "computer_keyboard_type", keyboard_type)
+    result = json.loads(await domain_tools.computer_action({
+        "window_id": "w1", "revision": context.revision,
+        "actions": [{"type": "type", "text": "周杰伦"}, {"type": "press", "keys": ["ENTER"]}]
+    }))
+    assert result["code"] == "input_not_verified"
+    assert calls == ["type"]
+
+
+@pytest.mark.asyncio
 async def test_command_output_is_bounded(monkeypatch):
     from reasonix_computer_use import domain_tools
 
@@ -356,6 +544,39 @@ async def test_command_output_is_bounded(monkeypatch):
     result = json.loads(await domain_tools.computer_system({"operation": "command", "target": "where python"}))
     assert len(result["stdout"]) == 4000
     assert result["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_shell_cannot_bypass_gui_executor_even_when_claimed_confirmed():
+    from reasonix_computer_use.domain_tools import computer_system
+
+    result = json.loads(await computer_system({
+        "operation": "command", "target": "Add-Type; [Windows.Forms.SendKeys]::SendWait('x')",
+        "params": {"confirmed": True}
+    }))
+    assert result["code"] == "gui_command_blocked"
+    assert result["blocked"] is True
+
+
+@pytest.mark.asyncio
+async def test_read_only_command_rejects_pipeline_mutation():
+    from reasonix_computer_use.domain_tools import computer_system
+
+    result = json.loads(await computer_system({
+        "operation": "command", "target": "Get-Process | Stop-Process", "params": {"confirmed": True}
+    }))
+    assert result["code"] in ("command_blocked", "command_not_read_only")
+
+
+@pytest.mark.asyncio
+async def test_read_only_command_rejects_recursive_disk_scan():
+    from reasonix_computer_use.domain_tools import computer_system
+
+    result = json.loads(await computer_system({
+        "operation": "command", "target": "Get-ChildItem C:\\ -Recurse"
+    }))
+    assert result["code"] == "command_not_read_only"
+    assert result["blocked"] is True
 
 
 @pytest.mark.asyncio
@@ -374,7 +595,7 @@ async def test_file_write_requires_confirmation(tmp_path):
 def test_manifest_and_docs_reference_new_api():
     root = Path(__file__).resolve().parent.parent
     manifest = json.loads((root / "reasonix-plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.8.0-alpha.0"
+    assert manifest["version"] == "0.8.0-alpha.2"
     assert "SessionStart" in manifest["hooks"]
     routing = (root / "CLAUDE.md").read_text(encoding="utf-8")
     assert "chrome-devtools" in routing
