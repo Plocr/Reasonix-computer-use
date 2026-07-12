@@ -11,6 +11,7 @@ venv/
 .pytest_cache/
 build/
 dist/
+runtime/
 
 # IDE
 .vscode/
@@ -27,5 +28,11 @@ desktop.ini
 .reasonix/
 reasonix-plugin.json.local
 
-# Auto-generated cache
+# Auto-generated machine profile, application memory and visual fallbacks
+memory/system.md
+memory/system-index.json
+memory/applist.md
 memory/swlist.md
+memory/apps/
+memory/screenshots/
+memory/operation-log.md

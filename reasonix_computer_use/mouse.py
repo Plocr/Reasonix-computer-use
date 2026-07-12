@@ -21,7 +21,7 @@ MOUSEEVENTF_ABSOLUTE = 0x8000
 
 @register_tool(
     name="computer_mouse_move",
-    description="""Move the mouse cursor to an absolute screen position.
+    description="""Low-level fallback: move the cursor in physical virtual-screen pixels.
 
 Coordinates are in virtual screen pixels (supports multi-monitor).
 - The origin (0, 0) is the top-left corner of the primary monitor.
@@ -70,7 +70,7 @@ async def computer_mouse_move(args: dict) -> str:
 
 @register_tool(
     name="computer_mouse_click",
-    description="""Click a mouse button at the current cursor position.
+    description="""Low-level fallback: click at the current or supplied physical coordinates.
 
 Parameters:
 - button: "left" (default), "right", "middle"
@@ -150,7 +150,7 @@ async def computer_mouse_click(args: dict) -> str:
 
 @register_tool(
     name="computer_mouse_scroll",
-    description="""Scroll the mouse wheel.
+    description="""Low-level fallback: scroll the mouse wheel.
 
 Parameters:
 - direction: "up" (default) or "down"

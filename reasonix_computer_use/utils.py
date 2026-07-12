@@ -16,7 +16,16 @@ def parse_result(result: Any) -> str:
     """
     if isinstance(result, str):
         return result
-    return json.dumps(result, ensure_ascii=False, default=str)
+    return json.dumps(result, ensure_ascii=False, default=str, separators=(",", ":"))
+
+
+def tool_error(code: str, message: str, *, retryable: bool = False,
+               fallback: str | None = None) -> str:
+    result = {"status": "error", "code": code, "message": message,
+              "retryable": retryable}
+    if fallback:
+        result["fallback"] = fallback
+    return parse_result(result)
 
 
 def safe_get(dictionary: dict, key: str, default: Any = None) -> Any:

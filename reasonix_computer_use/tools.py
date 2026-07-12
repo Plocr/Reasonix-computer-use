@@ -1,18 +1,12 @@
-"""
-Reasonix Computer Use Plugin - Windows GUI automation tools.
+"""Register only the four Reasonix-facing domain tools."""
 
-This package implements MCP tools for browser-outside GUI operations.
-All tools auto-register via decorators in mcp_server.py when this package is imported.
-"""
+# Import legacy modules as internal capabilities, then remove their public
+# registrations. domain_tools is imported last and owns the public API.
+from . import keyboard, mouse, screenshot, text_vision, ui_tree, utils, windows  # noqa: F401
+from .mcp_server import TOOLS
 
-# Import utils first (no registration, just utilities)
-from . import utils  # noqa: F401
+TOOLS.clear()
 
-# Import all tool modules to trigger registration decorators
-from . import mouse
-from . import keyboard
-from . import screenshot
-from . import ui_tree
-from . import app_discover
+from . import domain_tools  # noqa: E402,F401
 
-__all__ = ["utils", "mouse", "keyboard", "screenshot", "ui_tree", "app_discover"]
+__all__ = ["domain_tools"]

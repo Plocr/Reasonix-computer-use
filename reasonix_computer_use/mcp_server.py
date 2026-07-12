@@ -1,9 +1,20 @@
 """MCP stdio server for Reasonix computer use plugin."""
 
 import asyncio
+import base64
 import json
+import os
 import sys
+import time
 from typing import Any
+
+# Reasonix speaks UTF-8 over stdio. Windows may otherwise inherit a GBK
+# console encoding and crash the server when a tool returns CJK or symbols.
+for _stream in (sys.stdin, sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError):
+        pass
 
 
 async def read_request() -> dict[str, Any] | None:
@@ -19,7 +30,7 @@ async def read_request() -> dict[str, Any] | None:
 
 async def write_response(response: dict[str, Any]) -> None:
     """Write a JSON-RPC response to stdout."""
-    payload = json.dumps(response, ensure_ascii=True)
+    payload = json.dumps(response, ensure_ascii=False, separators=(",", ":"))
     await asyncio.to_thread(sys.stdout.write, payload + "\n")
     await asyncio.to_thread(sys.stdout.flush)
 
@@ -68,7 +79,7 @@ async def handle_initialize(request_id: Any) -> dict[str, Any]:
         },
         "serverInfo": {
             "name": "reasonix-computer-use",
-            "version": "0.1.0",
+            "version": "0.8.0-alpha.0",
         },
     })
 
@@ -90,20 +101,37 @@ async def handle_tools_call(request_id: Any, params: dict[str, Any]) -> dict[str
     """Handle tools/call request."""
     tool_name = params.get("name", "")
     arguments = params.get("arguments", {})
+    if isinstance(arguments, str):
+        try:
+            decoded = json.loads(arguments)
+            arguments = decoded if isinstance(decoded, dict) else {}
+        except json.JSONDecodeError:
+            arguments = {}
+    if not isinstance(arguments, dict):
+        return create_error(request_id, -32602, "Tool arguments must be a JSON object")
     
     if tool_name not in TOOLS:
         return create_error(request_id, -32601, f"Tool not found: {tool_name}")
     
     tool = TOOLS[tool_name]
     try:
+        started = time.perf_counter()
         result = await tool["handler"](arguments)
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+        content = [{"type": "text", "text": result}]
+        if tool_name == "computer_state":
+            try:
+                parsed = json.loads(result)
+                image_path = (parsed.get("path") or parsed.get("image_path")) if parsed.get("status") == "ok" else None
+                if image_path and os.path.isfile(image_path):
+                    with open(image_path, "rb") as image_file:
+                        content.append({"type": "image", "mimeType": "image/png",
+                                        "data": base64.b64encode(image_file.read()).decode("ascii")})
+            except (json.JSONDecodeError, OSError):
+                pass
         return create_response(request_id, {
-            "content": [
-                {
-                    "type": "text",
-                    "text": result,
-                }
-            ],
+            "content": content,
+            "_meta": {"elapsed_ms": elapsed_ms, "response_bytes": len(result.encode("utf-8"))},
         })
     except Exception as e:
         return create_error(request_id, -32600, f"Tool execution error: {e}")
@@ -112,6 +140,11 @@ async def handle_tools_call(request_id: Any, params: dict[str, Any]) -> dict[str
 def _import_tools():
     """Import all tool modules to trigger registration."""
     from reasonix_computer_use import tools  # noqa: F401
+    from reasonix_computer_use.system_index import start_background_enrichment, start_change_watcher
+    from reasonix_computer_use.text_vision import prewarm_ocr
+    start_background_enrichment()
+    start_change_watcher()
+    prewarm_ocr()
 
 
 async def main() -> None:

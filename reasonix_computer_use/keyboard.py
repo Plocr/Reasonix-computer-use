@@ -122,7 +122,7 @@ def _send_key(vk_code: int, key_up: bool = False):
 
 @register_tool(
     name="computer_keyboard_press",
-    description="""Press a key or key combination.
+    description="""Low-level fallback: press a key or key combination.
 
 Parameters:
 - key: key name (e.g., "Enter", "Tab", "Escape", "Space", "F1", "Delete")
@@ -212,7 +212,7 @@ async def computer_keyboard_press(args: dict) -> str:
 
 @register_tool(
     name="computer_keyboard_type",
-    description="""Type text character by character using keyboard input.
+    description="""Low-level fallback: type Unicode text into the focused control.
 
 Supports any Unicode text including Chinese, Japanese, and special characters.
 The text is typed using SendInput with KEYEVENTF_UNICODE flag, which is more

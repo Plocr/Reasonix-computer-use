@@ -12,8 +12,14 @@ import time
 import ctypes
 import ctypes.wintypes
 import glob
+import uuid
 from reasonix_computer_use.mcp_server import register_tool
 from reasonix_computer_use.utils import parse_result
+from reasonix_computer_use.utils import tool_error
+from reasonix_computer_use.windows import (
+    DPI_AWARENESS, activate_window, get_window_rect, list_windows, resolve_window,
+    virtual_screen, window_dpi,
+)
 
 
 # 截图保存目录（持久化，插件包 memory/ 下）
@@ -28,7 +34,7 @@ def _get_screenshot_dir():
 
 @register_tool(
     name="computer_screenshot",
-    description="""捕获屏幕截图。
+    description="""仅在 UIA 连续失败两次后使用。截取一张新的目标窗口标注图；禁止将截图作为第一步。
 
 三种模式：
 - "full": 截取整个屏幕（默认）
@@ -68,7 +74,11 @@ def _get_screenshot_dir():
             "output_path": {
                 "type": "string",
                 "description":"自定义保存路径。省略则保存到 memory/screenshots/。"
-            }
+            },
+            "fallback_token": {
+                "type": "string",
+                "description": "UIA 连续失败两次后由 computer_observe 签发的一次性令牌。"
+            },
         }
     }
 )
@@ -77,6 +87,14 @@ async def computer_screenshot(args: dict) -> str:
     mode = args.get("mode", "full")
     output_path = args.get("output_path")
     annotate = args.get("annotate", False)
+    if mode != "window" or not annotate or not args.get("window_id"):
+        return tool_error("invalid_visual_fallback",
+                          "截图仅允许作为视觉回退，必须使用 mode=window、annotate=true 并指定 window_id")
+    from reasonix_computer_use.ui_tree import consume_visual_fallback
+    allowed, reason = consume_visual_fallback(args.get("fallback_token"), args.get("window_id"))
+    if not allowed:
+        return tool_error("uia_required", reason, retryable=True,
+                          fallback="先对同一目标窗口连续调用两次 computer_observe")
     
     try:
         import pyautogui
@@ -84,26 +102,61 @@ async def computer_screenshot(args: dict) -> str:
         return parse_result({"error": f"缺少依赖: {e}。执行: pip install pyautogui"})
     
     try:
+        origin = {"x": 0, "y": 0}
+        hwnd = None
         if mode == "full":
-            screenshot = pyautogui.screenshot()
+            screen = virtual_screen()
+            origin = {"x": screen["left"], "y": screen["top"]}
+            screenshot = pyautogui.screenshot(region=(screen["left"], screen["top"],
+                                                       screen["width"], screen["height"]))
         elif mode == "window":
             window_id = args.get("window_id", "")
-            screenshot = _capture_window(window_id)
+            screenshot, info = _capture_window(window_id)
+            hwnd = info.hwnd
+            origin = {"x": info.rect[0], "y": info.rect[1]}
         elif mode == "region":
             region = args.get("region", {})
             x, y = region.get("x", 0), region.get("y", 0)
             w, h = region.get("width", 100), region.get("height", 100)
             screenshot = pyautogui.screenshot(region=(x, y, w, h))
+            origin = {"x": x, "y": y}
         else:
             return parse_result({"error": f"未知模式: {mode}"})
         
         # 保存到指定路径或默认 memory/screenshots/
         if output_path is None:
             screenshot_dir = _get_screenshot_dir()
-            output_path = os.path.join(screenshot_dir, f"screenshot_{int(time.time())}.png")
+            output_path = os.path.join(screenshot_dir, f"screenshot_{time.time_ns()}_{uuid.uuid4().hex[:6]}.png")
+        elif not _allowed_screenshot_path(output_path):
+            return tool_error("path_denied", "Screenshot output must be inside the screenshot directory or Reasonix workspace")
+
+        annotations = []
+        fallback = None
+        if annotate:
+            try:
+                from PIL import ImageDraw
+                from reasonix_computer_use.ui_tree import observe
+                observed = observe(args.get("window_id"), "interactive", 40)
+                draw = ImageDraw.Draw(screenshot)
+                for index, element in enumerate(observed["elements"], 1):
+                    rect = element["rect"]
+                    local = [rect[0] - origin["x"], rect[1] - origin["y"],
+                             rect[2] - origin["x"], rect[3] - origin["y"]]
+                    if local[2] <= 0 or local[3] <= 0 or local[0] >= screenshot.width or local[1] >= screenshot.height:
+                        continue
+                    label = str(index)
+                    draw.rectangle(local, outline="#ff1744", width=3)
+                    box = [local[0], max(0, local[1] - 18), local[0] + 10 + 8 * len(label), local[1]]
+                    draw.rectangle(box, fill="#ff1744")
+                    draw.text((box[0] + 4, box[1] + 2), label, fill="white")
+                    annotations.append({"n": index, "ref": element["ref"], "role": element["role"],
+                                        "name": element.get("name", ""), "rect": rect})
+            except Exception as exc:
+                fallback = str(exc)
         
         # 确保目录存在
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        output_path = os.path.realpath(os.path.abspath(output_path))
         screenshot.save(output_path, "PNG")
         
         return parse_result({
@@ -112,7 +165,14 @@ async def computer_screenshot(args: dict) -> str:
             "path": output_path,
             "width": screenshot.width,
             "height": screenshot.height,
-            "annotate": annotate
+            "annotate": annotate,
+            "origin": origin,
+            "size": {"width": screenshot.width, "height": screenshot.height},
+            "virtual_screen": virtual_screen(),
+            "dpi": window_dpi(hwnd) if hwnd else 96,
+            "dpi_awareness": DPI_AWARENESS,
+            "annotations": annotations,
+            **({"annotation_fallback": fallback} if fallback else {})
         })
     except Exception as e:
         return parse_result({"error": str(e)})
@@ -148,6 +208,8 @@ async def computer_screenshot_cleanup(args: dict) -> str:
     try:
         if path:
             # 删除指定文件
+            if not _allowed_screenshot_path(path):
+                return tool_error("path_denied", "Only managed screenshot files may be deleted")
             if os.path.exists(path):
                 os.remove(path)
                 return parse_result({"status": "ok", "deleted": path})
@@ -203,33 +265,40 @@ def _find_window_by_title(title: str) -> int | None:
     return result[0] if result else None
 
 
-def _capture_window(window_id: str):
+def _allowed_screenshot_path(path: str) -> bool:
+    target = os.path.realpath(os.path.abspath(path))
+    roots = [os.path.realpath(os.path.abspath(_get_screenshot_dir()))]
+    workspace = os.environ.get("REASONIX_WORKSPACE_ROOT")
+    if workspace:
+        roots.append(os.path.realpath(os.path.abspath(workspace)))
+    for root in roots:
+        try:
+            if os.path.commonpath([target, root]) == root:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _capture_window(window_id: str, activate: bool = True):
     """按标题或 hwnd 截取指定窗口。"""
     import pyautogui
     
-    hwnd = None
-    if window_id.startswith("0x") or window_id.isdigit():
-        hwnd = int(window_id, 16) if window_id.startswith("0x") else int(window_id)
-    else:
-        hwnd = _find_window_by_title(window_id)
-    
-    if hwnd is None:
-        raise ValueError(f"未找到窗口: {window_id}")
-    
-    # 获取窗口区域
-    rect = ctypes.wintypes.RECT()
-    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
-    
-    # 置顶
-    ctypes.windll.user32.SetForegroundWindow(hwnd)
-    time.sleep(0.2)
-    
-    # 截图
-    left, top = rect.left, rect.top
-    width = rect.right - rect.left
-    height = rect.bottom - rect.top
+    info = resolve_window(window_id)
+    if activate:
+        try:
+            activate_window(info.hwnd)
+            time.sleep(0.2)
+        except OSError:
+            # Foreground activation is advisory; observation may continue when
+            # Windows focus-stealing protection denies it.
+            pass
+    left, top, right, bottom = get_window_rect(info.hwnd)
+    width, height = right - left, bottom - top
+    if width <= 0 or height <= 0:
+        raise ValueError("Window has an empty capture rectangle")
     screenshot = pyautogui.screenshot(region=(left, top, width, height))
-    return screenshot
+    return screenshot, info
 
 
 @register_tool(
@@ -257,48 +326,12 @@ async def computer_window_list(args: dict) -> str:
     min_width = args.get("min_width", 10)
     
     windows = []
-    
-    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
-    def enum_callback(hwnd, lParam):
-        if visible_only and not ctypes.windll.user32.IsWindowVisible(hwnd):
-            return True
-        
-        length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-        if length == 0:
-            return True
-        
-        buff = ctypes.create_unicode_buffer(length + 1)
-        ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
-        title = buff.value
-        
-        rect = ctypes.wintypes.RECT()
-        ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
-        
-        width = rect.right - rect.left
-        height = rect.bottom - rect.top
-        if width < min_width or height < 10:
-            return True
-        
-        # 获取窗口类名
-        class_buff = ctypes.create_unicode_buffer(256)
-        ctypes.windll.user32.GetClassNameW(hwnd, class_buff, 256)
-        
-        windows.append({
-            "hwnd": hex(hwnd),
-            "title": title,
-            "class_name": class_buff.value,
-            "rect": {
-                "left": rect.left,
-                "top": rect.top,
-                "right": rect.right,
-                "bottom": rect.bottom
-            },
-            "width": width,
-            "height": height
-        })
-        return True
-    
-    ctypes.windll.user32.EnumWindows(enum_callback, 0)
+    for info in list_windows(visible_only, min_width):
+        left, top, right, bottom = info.rect
+        windows.append({"hwnd": hex(info.hwnd), "title": info.title,
+                        "class_name": info.class_name,
+                        "rect": {"left": left, "top": top, "right": right, "bottom": bottom},
+                        "width": right - left, "height": bottom - top})
     
     return parse_result({
         "status": "ok",
@@ -332,53 +365,10 @@ async def computer_window_activate(args: dict) -> str:
     window_id = args.get("window_id", "")
     method = args.get("method", "title")
     
-    hwnd = None
-    found_title = ""
-    
-    if method == "hwnd":
-        hwnd = int(window_id, 16) if window_id.startswith("0x") else int(window_id)
-    else:
-        target = window_id.lower()
-        
-        @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
-        def enum_callback(hwnd_, lParam):
-            nonlocal hwnd, found_title
-            if not ctypes.windll.user32.IsWindowVisible(hwnd_):
-                return True
-            length = ctypes.windll.user32.GetWindowTextLengthW(hwnd_)
-            if length == 0:
-                return True
-            buff = ctypes.create_unicode_buffer(length + 1)
-            ctypes.windll.user32.GetWindowTextW(hwnd_, buff, length + 1)
-            
-            match = False
-            if method == "title":
-                match = target in buff.value.lower()
-            else:
-                class_buff = ctypes.create_unicode_buffer(256)
-                ctypes.windll.user32.GetClassNameW(hwnd_, class_buff, 256)
-                match = target == class_buff.value.lower()
-            
-            if match:
-                hwnd = hwnd_
-                found_title = buff.value
-                return False  # 停止
-            return True
-        
-        ctypes.windll.user32.EnumWindows(enum_callback, 0)
-    
-    if hwnd is None:
-        return parse_result({"error": f"未找到窗口: {window_id}"})
-    
-    # 如果是最小化状态则恢复
-    if ctypes.windll.user32.IsIconic(hwnd):
-        ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-    
-    ctypes.windll.user32.SetForegroundWindow(hwnd)
-    time.sleep(0.1)
-    
-    return parse_result({
-        "status": "ok",
-        "hwnd": hex(hwnd),
-        "title": found_title
-    })
+    try:
+        info = resolve_window(window_id, method)
+        activate_window(info.hwnd)
+        time.sleep(0.1)
+        return parse_result({"status": "ok", "hwnd": hex(info.hwnd), "title": info.title})
+    except Exception as exc:
+        return tool_error("window_activate_failed", str(exc), retryable=True)
