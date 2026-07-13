@@ -61,7 +61,7 @@ reasonix-computer-use/
 - 同一 revision 禁止重复相同动作，相同图片不会再次返回
 - `blocked=true` 时 Agent 必须停止，不得换 Shell、浏览器或新会话重复原流程
 - 浏览器地址导航使用同一批次的 `Ctrl+L → 输入 URL → Enter`，不得点击网页搜索框代替地址栏
-- 用户要求进入网站后搜索时必须执行页面内搜索，不得合成搜索结果 URL 绕过中间步骤
+- 页面内搜索连续受阻时，允许通过同一站点的搜索结果 URL 完成目标，但必须确认域名和结果正确
 - Edit/ComboBox 输入默认替换已有内容；只有 `replace:false` 才追加，避免重试产生重复文本
 - OCR 仅在目标窗口确认位于前台后执行，避免读取被 Reasonix 或其他窗口遮挡的区域
 - OCR 的 `o*` 引用可直接交给 `click_ref`；空 `click_text` 会被拒绝，避免误点页面第一个文字
