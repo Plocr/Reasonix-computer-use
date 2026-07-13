@@ -26,7 +26,7 @@ def summary() -> dict:
         "tools": ["computer_app", "computer_state", "computer_action", "computer_system"],
         "environment": {key: environment.get(key) for key in ("status", "ready", "missing")},
         "setup_hint": (None if environment.get("ready") else
-                       "经用户确认后调用 computer_system(operation=setup, params.confirmed=true)，随后轮询 setup_status"),
+                       "经用户确认后调用 computer_system(operation=setup, params.confirmed=true)，随后调用 setup_status(wait_seconds=20)；禁止 Shell sleep"),
     }
 
 

@@ -1,10 +1,9 @@
 [project]
 name = "reasonix-computer-use"
-version = "0.8.0-alpha.5"
+version = "0.8.0-alpha.6"
 description = "Reasonix-native Windows computer use with UIA, local OCR and visual fallback"
 requires-python = ">=3.10"
 dependencies = [
-    "pyautogui>=0.9.54",
     "Pillow>=10.0.0",
     "comtypes>=1.4.0",
     "rapidocr-onnxruntime>=1.4.4",

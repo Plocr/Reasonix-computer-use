@@ -97,18 +97,13 @@ async def computer_screenshot(args: dict) -> str:
                           fallback="先对同一目标窗口连续调用两次 computer_observe")
     
     try:
-        import pyautogui
-    except ImportError as e:
-        return parse_result({"error": f"缺少依赖: {e}。执行: pip install pyautogui"})
-    
-    try:
         origin = {"x": 0, "y": 0}
         hwnd = None
         if mode == "full":
             screen = virtual_screen()
             origin = {"x": screen["left"], "y": screen["top"]}
-            screenshot = pyautogui.screenshot(region=(screen["left"], screen["top"],
-                                                       screen["width"], screen["height"]))
+            screenshot = _grab_region(screen["left"], screen["top"],
+                                      screen["width"], screen["height"])
         elif mode == "window":
             window_id = args.get("window_id", "")
             screenshot, info = _capture_window(window_id)
@@ -118,7 +113,7 @@ async def computer_screenshot(args: dict) -> str:
             region = args.get("region", {})
             x, y = region.get("x", 0), region.get("y", 0)
             w, h = region.get("width", 100), region.get("height", 100)
-            screenshot = pyautogui.screenshot(region=(x, y, w, h))
+            screenshot = _grab_region(x, y, w, h)
             origin = {"x": x, "y": y}
         else:
             return parse_result({"error": f"未知模式: {mode}"})
@@ -282,8 +277,6 @@ def _allowed_screenshot_path(path: str) -> bool:
 
 def _capture_window(window_id: str, activate: bool = True):
     """按标题或 hwnd 截取指定窗口。"""
-    import pyautogui
-    
     info = resolve_window(window_id)
     if activate:
         try:
@@ -298,8 +291,14 @@ def _capture_window(window_id: str, activate: bool = True):
     if width <= 0 or height <= 0:
         raise ValueError("Window has an empty capture rectangle")
     with physical_pixel_context():
-        screenshot = pyautogui.screenshot(region=(left, top, width, height))
+        screenshot = _grab_region(left, top, width, height)
     return screenshot, info
+
+
+def _grab_region(left: int, top: int, width: int, height: int):
+    from PIL import ImageGrab
+
+    return ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True)
 
 
 @register_tool(

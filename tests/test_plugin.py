@@ -42,7 +42,7 @@ async def test_mcp_initialize_and_list_report_08():
     from reasonix_computer_use.mcp_server import handle_initialize, handle_tools_list
 
     initialized = await handle_initialize(1)
-    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.5"
+    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.6"
     listed = await handle_tools_list(2)
     assert {tool["name"] for tool in listed["result"]["tools"]} == PUBLIC_TOOLS
 
@@ -369,6 +369,44 @@ def test_launch_uses_shell_when_job_forbids_breakaway(monkeypatch, tmp_path):
     pid, process = domain_tools._launch({"path": str(executable)})
     assert (pid, process) == (0, None)
     assert launched[0][0] == str(executable)
+    assert "arguments" not in launched[0][1]
+
+
+def test_launch_shell_passes_nonempty_arguments(monkeypatch, tmp_path):
+    from reasonix_computer_use import domain_tools
+
+    executable = tmp_path / "app.exe"
+    executable.touch()
+    launched = []
+
+    def denied(*_args, **_kwargs):
+        error = OSError("breakaway denied")
+        error.winerror = 5
+        raise error
+
+    monkeypatch.setattr(domain_tools.subprocess, "Popen", denied)
+    monkeypatch.setattr(domain_tools.os, "startfile",
+                        lambda path, **kwargs: launched.append((path, kwargs)))
+    domain_tools._launch({"path": str(executable), "launch_args": "--new-window"})
+    assert launched[0][1]["arguments"] == "--new-window"
+
+
+def test_edge_components_are_not_application_candidates():
+    from reasonix_computer_use.system_index import _is_non_app_name
+
+    assert _is_non_app_name("Microsoft Edge Update")
+    assert _is_non_app_name("Microsoft Edge WebView2 Runtime")
+    assert not _is_non_app_name("Microsoft Edge")
+
+
+def test_pillow_capture_uses_physical_bbox(monkeypatch):
+    from PIL import ImageGrab
+    from reasonix_computer_use.screenshot import _grab_region
+
+    calls = []
+    monkeypatch.setattr(ImageGrab, "grab", lambda **kwargs: calls.append(kwargs) or object())
+    _grab_region(-100, 25, 640, 480)
+    assert calls == [{"bbox": (-100, 25, 540, 505), "all_screens": True}]
 
 
 @pytest.mark.asyncio
@@ -376,7 +414,7 @@ async def test_missing_environment_blocks_app_before_launch(monkeypatch):
     from reasonix_computer_use import domain_tools
 
     monkeypatch.setattr(domain_tools, "environment_status",
-                        lambda: {"ready": False, "missing": ["pyautogui"]})
+                        lambda: {"ready": False, "missing": ["PIL"]})
     monkeypatch.setattr(domain_tools, "search_apps",
                         lambda *_args, **_kwargs: pytest.fail("application search must not run"))
     result = json.loads(await domain_tools.computer_app({"operation": "launch", "query": "QQ"}))
@@ -641,12 +679,16 @@ def test_environment_worker_installs_only_fixed_dependencies(monkeypatch, tmp_pa
 async def test_computer_system_exposes_setup_status(monkeypatch):
     from reasonix_computer_use import domain_tools
 
-    monkeypatch.setattr(domain_tools, "environment_status",
-                        lambda: {"status": "installing", "ready": False,
-                                 "poll_after_seconds": 3, "log_tail": ["Downloading"]})
-    result = json.loads(await domain_tools.computer_system({"operation": "setup_status"}))
+    calls = []
+    monkeypatch.setattr(domain_tools, "wait_environment_status",
+                        lambda seconds: calls.append(seconds) or {
+                            "status": "installing", "ready": False,
+                            "poll_after_seconds": 3, "log_tail": ["Downloading"]})
+    result = json.loads(await domain_tools.computer_system({
+        "operation": "setup_status", "params": {"wait_seconds": 20}}))
     assert result["status"] == "installing"
     assert result["poll_after_seconds"] == 3
+    assert calls == [20.0]
 
 
 @pytest.mark.asyncio
@@ -749,7 +791,7 @@ async def test_file_write_requires_confirmation(tmp_path):
 def test_manifest_and_docs_reference_new_api():
     root = Path(__file__).resolve().parent.parent
     manifest = json.loads((root / "reasonix-plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.8.0-alpha.5"
+    assert manifest["version"] == "0.8.0-alpha.6"
     assert "hooks" not in manifest
     routing = (root / "CLAUDE.md").read_text(encoding="utf-8")
     assert "chrome-devtools" in routing
@@ -760,7 +802,7 @@ def test_readme_documents_git_dependencies_and_windows_release():
     root = Path(__file__).resolve().parent.parent
     readme = (root / "README.md").read_text(encoding="utf-8")
     assert "git:github.com/Plocr/Reasonix-computer-use" in readme
-    for dependency in ("pyautogui", "Pillow", "comtypes", "rapidocr-onnxruntime"):
+    for dependency in ("Pillow", "comtypes", "rapidocr-onnxruntime"):
         assert dependency in readme
     assert "windows-x64.zip" in readme
     assert "windows-x64-setup.exe" in readme

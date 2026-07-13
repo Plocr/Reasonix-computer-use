@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .environment_setup import environment_status, start_environment_setup
+from .environment_setup import environment_status, start_environment_setup, wait_environment_status
 from .input_guard import reserve_text_input
 from .keyboard import VK_MAP, _send_key, computer_keyboard_press, computer_keyboard_type, paste_unicode_text
 from .mcp_server import register_tool
@@ -119,7 +119,10 @@ def _launch(app: dict[str, Any]) -> tuple[int, Any]:
             raise
         # Some hosts use a Job Object that forbids explicit breakaway. Delegate
         # to the Windows shell so Explorer can own the application process.
-        os.startfile(target, arguments=args or None, cwd=str(Path(target).parent))
+        startfile_options = {"cwd": str(Path(target).parent)}
+        if args:
+            startfile_options["arguments"] = args
+        os.startfile(target, **startfile_options)
         return 0, None
 
 
@@ -895,7 +898,8 @@ async def computer_system(args: dict) -> str:
             result = start_environment_setup(bool(params.get("confirmed", False)))
             return parse_result(result)
         if operation == "setup_status":
-            return parse_result(environment_status())
+            wait_seconds = max(0.0, min(float(params.get("wait_seconds", 0)), 30.0))
+            return parse_result(wait_environment_status(wait_seconds))
         if operation == "file":
             return _ok(result=_file_operation(target, params))
         if operation == "window":

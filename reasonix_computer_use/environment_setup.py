@@ -15,12 +15,11 @@ from typing import Any
 
 
 DEPENDENCIES = (
-    "pyautogui>=0.9.54",
     "Pillow>=10.0.0",
     "comtypes>=1.4.0",
     "rapidocr-onnxruntime>=1.4.4",
 )
-MODULES = ("pyautogui", "PIL", "comtypes", "rapidocr_onnxruntime")
+MODULES = ("PIL", "comtypes", "rapidocr_onnxruntime")
 STALE_SETUP_SECONDS = 900
 _PROCESS_STARTED_AT = time.time()
 
@@ -115,6 +114,31 @@ def environment_status() -> dict[str, Any]:
         result.update({"error": str(state.get("error", "依赖安装失败"))[:300],
                        "log_tail": _log_tail()})
     return result
+
+
+def _progress_marker() -> tuple[Any, ...]:
+    state = _read_state()
+    try:
+        log = log_path().stat()
+        log_marker = (log.st_mtime_ns, log.st_size)
+    except OSError:
+        log_marker = (0, 0)
+    return (state.get("status"), state.get("updated_at"), *log_marker)
+
+
+def wait_environment_status(wait_seconds: float = 0) -> dict[str, Any]:
+    """Long-poll until setup progress changes, avoiding Agent-side shell sleeps."""
+    initial = environment_status()
+    if wait_seconds <= 0 or initial.get("status") != "installing":
+        return initial
+    marker = _progress_marker()
+    deadline = time.monotonic() + min(wait_seconds, 30.0)
+    while time.monotonic() < deadline:
+        time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
+        current = environment_status()
+        if current.get("status") != "installing" or _progress_marker() != marker:
+            return current
+    return environment_status()
 
 
 def start_environment_setup(confirmed: bool = False) -> dict[str, Any]:

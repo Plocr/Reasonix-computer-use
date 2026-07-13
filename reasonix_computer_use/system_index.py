@@ -29,6 +29,7 @@ _LOCK = threading.RLock()
 _ENRICHING = False
 _WATCHER_STARTED = False
 _BAD_EXECUTABLES = ("unins", "uninstall", "setup", "installer", "update", "crash", "helper", "service")
+_NON_APP_NAMES = (" update", "updater", "webview", " runtime", "redistributable")
 APP_ALIASES = {
     "记事本": "notepad", "文本编辑器": "notepad",
     "计算器": "calculator", "画图": "paint", "截图工具": "snipping tool",
@@ -36,6 +37,11 @@ APP_ALIASES = {
     "系统设置": "settings", "windows 设置": "settings",
     "任务管理器": "task manager", "终端": "windows terminal",
 }
+
+
+def _is_non_app_name(name: str) -> bool:
+    lowered_name = name.casefold()
+    return any(token in lowered_name for token in _NON_APP_NAMES)
 
 FOLDER_VALUES = {
     "桌面": "Desktop",
@@ -248,6 +254,8 @@ def _scan_uninstall() -> list[dict[str, Any]]:
                     winreg.CloseKey(sub)
                     name = values["DisplayName"].strip()
                     if not name:
+                        continue
+                    if _is_non_app_name(name):
                         continue
                     target = _clean_executable(values["DisplayIcon"])
                     if not _launchable_executable(target):
