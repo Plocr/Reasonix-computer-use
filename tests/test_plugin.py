@@ -42,7 +42,7 @@ async def test_mcp_initialize_and_list_report_08():
     from reasonix_computer_use.mcp_server import handle_initialize, handle_tools_list
 
     initialized = await handle_initialize(1)
-    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.7"
+    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.8"
     listed = await handle_tools_list(2)
     assert {tool["name"] for tool in listed["result"]["tools"]} == PUBLIC_TOOLS
 
@@ -558,6 +558,60 @@ async def test_input_like_combobox_is_focused_instead_of_expanded(monkeypatch):
     assert calls[0]["action"] == "focus"
 
 
+@pytest.mark.asyncio
+async def test_ocr_ref_clicks_its_own_rectangle(monkeypatch):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.runtime import WindowContext
+
+    context = WindowContext("w1", 1)
+    context.elements = [{"ref": "o15", "role": "text", "name": "百度",
+                         "rect": [100, 200, 300, 240]}]
+    clicks = []
+
+    async def click(args):
+        clicks.append(args)
+        return json.dumps({"status": "ok"})
+
+    monkeypatch.setattr(domain_tools, "computer_mouse_click", click)
+    result = await domain_tools._execute(context, {"type": "click_text", "ref": "o15"})
+    assert result["status"] == "ok"
+    assert clicks[0]["x"] == 200
+    assert clicks[0]["y"] == 220
+
+
+@pytest.mark.asyncio
+async def test_empty_click_text_is_rejected_without_ocr(monkeypatch):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.runtime import WindowContext
+
+    monkeypatch.setattr(domain_tools, "find_text",
+                        lambda *_a, **_k: pytest.fail("empty OCR query must not run"))
+    result = await domain_tools._execute(WindowContext("w1", 1),
+                                         {"type": "click_text", "text": ""})
+    assert result["code"] == "missing_text"
+
+
+@pytest.mark.asyncio
+async def test_link_like_edit_uses_physical_click(monkeypatch):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.runtime import WindowContext
+
+    context = WindowContext("w1", 1)
+    context.elements = [{"ref": "e1", "role": "Edit", "name": "DeepSeek | 深度求索",
+                         "rect": [150, 350, 330, 380], "actions": ["set_value", "focus"],
+                         "class": "cos-link result-title"}]
+    clicks = []
+
+    async def click(args):
+        clicks.append(args)
+        return json.dumps({"status": "ok"})
+
+    monkeypatch.setattr(domain_tools, "computer_mouse_click", click)
+    result = await domain_tools._click_ref(context, "e1")
+    assert result["status"] == "ok"
+    assert clicks == [{"x": 240, "y": 365, "button": "left"}]
+
+
 def test_press_accepts_combined_shortcut_shape():
     from reasonix_computer_use.domain_tools import _press_parts
 
@@ -838,7 +892,7 @@ async def test_file_write_requires_confirmation(tmp_path):
 def test_manifest_and_docs_reference_new_api():
     root = Path(__file__).resolve().parent.parent
     manifest = json.loads((root / "reasonix-plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.8.0-alpha.7"
+    assert manifest["version"] == "0.8.0-alpha.8"
     assert "hooks" not in manifest
     routing = (root / "CLAUDE.md").read_text(encoding="utf-8")
     assert "chrome-devtools" in routing

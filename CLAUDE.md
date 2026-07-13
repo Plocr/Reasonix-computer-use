@@ -15,3 +15,4 @@ Windows 桌面任务只使用四个工具：`computer_app`、`computer_state`、
 9. 每次修改功能、接口、安装方式、依赖或发布流程时，同步更新 README.md 的对应说明和版本状态。
 10. 任一桌面工具返回 `setup_required` 时，先告知用户将下载依赖；确认后调用 `computer_system(operation="setup", params={"confirmed":true})`，再调用 `computer_system(operation="setup_status", params={"wait_seconds":20})`。等待由插件内部完成，不得使用 Shell sleep 或 pip。
 11. 浏览器地址导航使用同一批次的 `press(["CTRL","L"]) → type(URL) → press(["ENTER"])`，不得点击网页搜索框代替地址栏。编辑框输入默认替换原内容，仅明确追加时使用 `replace:false`。
+12. 用户要求“进入网站后再搜索”时必须保留页面内搜索步骤，不得合成搜索结果 URL 绕过。OCR 的 `o*` ref 使用 `click_ref`；`click_text` 必须提供非空 `text`。

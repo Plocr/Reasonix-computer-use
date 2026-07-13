@@ -19,8 +19,10 @@ computer_app(launch, query="应用名")
 - 禁止转用 Bash 或 PowerShell 全盘查找应用。
 - `computer_state` 已在内部按应用记忆、UIA、本地 OCR、窗口图片排序。不要自行调用图片理解工具。
 - `source=uia` 使用 `click_ref`；`source=ocr` 使用 `click_text`；只有 `source=visual` 才使用当前 revision 的 `click_point`。
+- OCR 返回的 `o*` 短引用也可以直接使用 `click_ref`；`click_text` 必须传非空 `text`，禁止只传 `ref` 或空文字。
 - `actions[]` 的动作名字段固定为 `type`，不是 `action` 或 `command`。示例：`{"type":"click_ref","ref":"e1"}`、`{"type":"type","text":"周杰伦"}`、`{"type":"press","keys":["ENTER"]}`。
 - 浏览器地址导航使用同一批次的 `{"type":"press","keys":["CTRL","L"]}`、`type(URL)`、`ENTER`；也兼容 `keys:["CTRL+L"]`。不得点击网页搜索框代替地址栏。
+- 用户明确要求“进入网站后再搜索”时必须保留该中间步骤；不得合成 `/search?...`、`/s?wd=...` 等结果页 URL 绕过页面内搜索。网页 DOM 可用时优先交给 `chrome-devtools`。
 - Edit/ComboBox 的 `type` 默认替换已有内容；仅明确需要追加时设置 `replace:false`，避免重试产生重复文本。
 - 视觉图片坐标是窗口内物理像素，`click_point` 默认 `coordinate_space=window`；不要把旧截图或桌面坐标用于当前 revision。
 - 确定的输入、按键和点击合并到一次 `computer_action`，最多五步。执行器会验证并在失败处停止。

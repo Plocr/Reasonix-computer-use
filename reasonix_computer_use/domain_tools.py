@@ -452,9 +452,21 @@ async def _click_ref(context: WindowContext, ref: str) -> dict[str, Any]:
     element = next((item for item in context.elements if item.get("ref") == ref), None)
     if not element:
         return {"status": "error", "code": "stale_ref", "message": "ref 不属于当前 revision"}
+    rect = element.get("rect", [])
+    if str(ref).startswith("o"):
+        if len(rect) != 4:
+            return {"status": "error", "code": "invalid_ocr_ref", "message": "OCR ref 缺少有效坐标"}
+        left, top, right, bottom = (int(value) for value in rect)
+        return _parse_result(await computer_mouse_click({
+            "x": (left + right) // 2, "y": (top + bottom) // 2, "button": "left"}))
     actions = element.get("actions", [])
     semantic = "invoke"
     role = str(element.get("role", ""))
+    class_name = str(element.get("class", element.get("class_name", ""))).casefold()
+    if role in ("Edit", "Document") and "link" in class_name and len(rect) == 4:
+        left, top, right, bottom = (int(value) for value in rect)
+        return _parse_result(await computer_mouse_click({
+            "x": (left + right) // 2, "y": (top + bottom) // 2, "button": "left"}))
     candidates = (("focus", "click", "set_value", "expand") if role in ("Edit", "Document", "ComboBox")
                   else ("invoke", "toggle", "select", "expand", "focus", "click"))
     for candidate in candidates:
@@ -490,7 +502,13 @@ async def _execute(context: WindowContext, action: dict[str, Any]) -> dict[str, 
     if kind == "click_ref":
         return await _click_ref(context, str(action.get("ref", "")))
     if kind == "click_text":
+        ref = str(action.get("ref", ""))
+        if ref:
+            return await _click_ref(context, ref)
         text = str(action.get("text", ""))
+        if not text.strip():
+            return {"status": "error", "code": "missing_text",
+                    "message": "click_text 必须提供非空 text，或改用 click_ref"}
         matches = [item for item in context.elements if text.casefold() in str(item.get("name", "")).casefold()]
         if matches and str(matches[0].get("ref", "")).startswith("e"):
             return await _click_ref(context, str(matches[0]["ref"]))
