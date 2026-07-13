@@ -24,6 +24,9 @@ computer_app(launch, query="应用名")
 - 浏览器地址导航使用同一批次的 `{"type":"press","keys":["CTRL","L"]}`、`type(URL)`、`ENTER`；也兼容 `keys:["CTRL+L"]`。不得点击网页搜索框代替地址栏。
 - 页面内搜索连续受阻时，允许合成同一站点的 `/search?...`、`/s?wd=...` 等结果页 URL 完成目标；必须校验域名与结果，网页 DOM 可用时仍优先交给 `chrome-devtools`。
 - Edit/ComboBox 的 `type` 默认替换已有内容；仅明确需要追加时设置 `replace:false`，避免重试产生重复文本。
+- 表格单元格必须用 `select_cell(cell="A1")`、名称框或“定位”跳转；禁止根据网格像素猜测 A1。状态中的 `focused:true`、`selected:true` 才表示当前焦点或选择状态。
+- 连续数据优先一次粘贴制表符/换行文本。计算器可在一次 `type` 中键入完整的 `1+2+...+100` 表达式，不需要逐个鼠标点击。
+- 用户明确指定某个应用作为处理步骤时，不得静默改用 Python、公式或 CLI。应用名称未命中时先搜索同类软件和 StartApps；仍不可用才说明并请求用户决定。用户只要求结果、未指定方法时才可主动切换 CLI。
 - 视觉图片坐标是窗口内物理像素，`click_point` 默认 `coordinate_space=window`；不要把旧截图或桌面坐标用于当前 revision。
 - 确定的输入、按键和点击合并到一次 `computer_action`，最多五步。执行器会验证并在失败处停止。
 - `unchanged=true` 时不要重复观察或截图。`repeat_blocked` 时必须换策略或请求用户介入。

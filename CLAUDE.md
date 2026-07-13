@@ -16,3 +16,4 @@ Windows 桌面任务只使用四个工具：`computer_app`、`computer_state`、
 10. 任一桌面工具返回 `setup_required` 时，先告知用户将下载依赖；确认后调用 `computer_system(operation="setup", params={"confirmed":true})`，再调用 `computer_system(operation="setup_status", params={"wait_seconds":20})`。等待由插件内部完成，不得使用 Shell sleep 或 pip。
 11. 浏览器地址导航使用同一批次的 `press(["CTRL","L"]) → type(URL) → press(["ENTER"])`，不得点击网页搜索框代替地址栏。编辑框输入默认替换原内容，仅明确追加时使用 `replace:false`。
 12. 页面内搜索连续受阻时，可通过同一站点的搜索结果 URL 完成目标，但必须确认域名和结果。OCR 的 `o*` ref 使用 `click_ref`；`click_text` 必须提供非空 `text`。
+13. 表格单元格使用 `select_cell(cell="A1")`、名称框或定位功能，不得猜网格坐标；根据 `focused/selected` 确认选择状态。用户指定计算器等应用步骤时不得静默替换为 Python、公式或 CLI；可将完整算式一次键入计算器以减少动作。

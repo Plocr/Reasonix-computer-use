@@ -37,6 +37,9 @@ APP_ALIASES = {
     "系统设置": "settings", "windows 设置": "settings",
     "任务管理器": "task manager", "终端": "windows terminal",
 }
+SEARCH_SYNONYMS = {
+    "calculator": ("calculator", "计算器", "windows calculator"),
+}
 
 
 def _is_non_app_name(name: str) -> bool:
@@ -311,7 +314,9 @@ def _running_apps() -> list[dict[str, Any]]:
 
 
 def _scan_start_apps() -> list[dict[str, Any]]:
-    command = "Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Compress"
+    command = ("$OutputEncoding=[Text.Encoding]::UTF8;"
+               "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
+               "Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Compress")
     try:
         output = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
@@ -569,23 +574,43 @@ def search_apps(query: str, limit: int = 10, refresh_on_miss: bool = True) -> li
     index = ensure_index()
     requested = query.strip().casefold()
     needle = APP_ALIASES.get(requested, requested)
+    query_terms = tuple(dict.fromkeys((requested, needle, *SEARCH_SYNONYMS.get(needle, ()))))
 
     def rank(item: dict[str, Any]) -> tuple:
         name = str(item.get("name", "")).casefold()
         path = str(item.get("path") or "")
         stem = Path(path).stem.casefold()
-        gui_name = name in (f"{needle} app", f"{needle} desktop")
-        return (name != needle, not gui_name, stem != needle, not name.startswith(needle), needle not in name and needle not in stem,
-                path.casefold().startswith("shell:appsfolder"), -float(item.get("confidence", 0)), len(name))
+        exact = name in query_terms or stem in query_terms
+        gui_name = any(name in (f"{term} app", f"{term} desktop") for term in query_terms)
+        starts = any(name.startswith(term) or stem.startswith(term) for term in query_terms if term)
+        contains = any(term in name or term in stem for term in query_terms if term)
+        return (not exact, not gui_name, not starts, not contains,
+                -float(item.get("confidence", 0)), path.casefold().startswith("shell:appsfolder"), len(name))
 
-    matches = [item for item in index.get("applications", [])
-               if needle in str(item.get("name", "")).casefold()
-               or needle in Path(str(item.get("path") or "")).stem.casefold()]
-    if not matches and refresh_on_miss:
-        index = build_index(f"application-miss:{query}")
-        matches = [item for item in index.get("applications", [])
-                   if needle in str(item.get("name", "")).casefold()
-                   or needle in Path(str(item.get("path") or "")).stem.casefold()]
+    def matches_query(item: dict[str, Any]) -> bool:
+        name = str(item.get("name", "")).casefold()
+        stem = Path(str(item.get("path") or "")).stem.casefold()
+        return any(value and (value in name or value in stem) for value in query_terms)
+
+    def has_strong_match(items: list[dict[str, Any]]) -> bool:
+        return any(str(item.get("name", "")).casefold() in query_terms
+                   or Path(str(item.get("path") or "")).stem.casefold() in query_terms
+                   for item in items)
+
+    matches = [item for item in index.get("applications", []) if matches_query(item)]
+    if refresh_on_miss and (not matches or not has_strong_match(matches)):
+        # UWP/MSIX system apps such as Calculator primarily live in StartApps.
+        # Query that focused source before rebuilding the wider machine index.
+        start_apps = _scan_start_apps()
+        if start_apps:
+            index["applications"] = _merge_apps(start_apps, index.get("applications", []))
+            index["updated_at"] = _now()
+            index["reason"] = f"start-apps-miss:{query}"
+            write_profile_and_index(index)
+            matches = [item for item in index["applications"] if matches_query(item)]
+        if not matches:
+            index = build_index(f"application-miss:{query}")
+            matches = [item for item in index.get("applications", []) if matches_query(item)]
     selected = sorted(matches, key=rank)[:max(1, min(int(limit), 10))]
     if any(item.get("path") and not item.get("sha256") and _launchable_executable(str(item["path"]))
            for item in selected):

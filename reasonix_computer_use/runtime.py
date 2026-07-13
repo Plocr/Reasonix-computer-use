@@ -207,7 +207,7 @@ def window_payload(context: WindowContext, info: WindowInfo | None = None) -> di
 def semantic_state(info: WindowInfo, elements: list[dict[str, Any]]) -> dict[str, Any]:
     compact = []
     for item in elements:
-        compact.append({key: item.get(key) for key in ("role", "name", "rect", "value", "checked", "selected")
+        compact.append({key: item.get(key) for key in ("role", "name", "rect", "value", "checked", "selected", "focused")
                         if item.get(key) not in (None, "", [])})
     return {"window": _window_state(info), "elements": compact}
 

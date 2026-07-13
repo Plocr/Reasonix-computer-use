@@ -112,7 +112,7 @@ def _properties(element, prefer_cached: bool = True) -> dict:
             except (TypeError, IndexError):
                 rect = None
     role = CONTROL_TYPES.get(read(element, "ControlType", 0), "Unknown")
-    return {
+    result = {
         "name": read(element, "Name", ""),
         "automation_id": read(element, "AutomationId", ""),
         "class_name": read(element, "ClassName", ""),
@@ -120,7 +120,25 @@ def _properties(element, prefer_cached: bool = True) -> dict:
         "rect": rect,
         "enabled": bool(read(element, "IsEnabled", False)),
         "offscreen": bool(read(element, "IsOffscreen", True)),
+        "focused": bool(read(element, "HasKeyboardFocus", False)),
     }
+    if role in ("ListItem", "TreeItem", "TabItem", "DataItem"):
+        try:
+            constants = comtypes.gen.UIAutomationClient
+            pattern = element.GetCurrentPattern(constants.UIA_SelectionItemPatternId)
+            selection = pattern.QueryInterface(constants.IUIAutomationSelectionItemPattern)
+            result["selected"] = bool(selection.CurrentIsSelected)
+        except Exception:
+            pass
+    if role in ("Edit", "ComboBox", "Document"):
+        try:
+            constants = comtypes.gen.UIAutomationClient
+            pattern = element.GetCurrentPattern(constants.UIA_ValuePatternId)
+            value_pattern = pattern.QueryInterface(constants.IUIAutomationValuePattern)
+            result["value"] = str(value_pattern.CurrentValue)
+        except Exception:
+            pass
+    return result
 
 
 def _meaningful(item: dict, scope: str) -> bool:
@@ -148,6 +166,12 @@ def _compact(item: dict, ref: str | None = None) -> dict:
         result["id"] = item["automation_id"]
     if item.get("class_name"):
         result["class"] = item["class_name"]
+    if item.get("value") not in (None, ""):
+        result["value"] = item["value"]
+    if item.get("focused"):
+        result["focused"] = True
+    if "selected" in item:
+        result["selected"] = bool(item["selected"])
     return {key: value for key, value in result.items() if value not in (None, "", [])}
 
 

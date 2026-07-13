@@ -34,6 +34,8 @@ def test_action_schema_exposes_canonical_type_and_coordinate_space():
     item = TOOLS["computer_action"]["inputSchema"]["properties"]["actions"]["items"]
     assert item["required"] == ["type"]
     assert "click_ref" in item["properties"]["type"]["enum"]
+    assert "select_cell" in item["properties"]["type"]["enum"]
+    assert "cell" in item["properties"]
     assert item["properties"]["coordinate_space"]["default"] == "window"
 
 
@@ -42,7 +44,7 @@ async def test_mcp_initialize_and_list_report_08():
     from reasonix_computer_use.mcp_server import handle_initialize, handle_tools_list
 
     initialized = await handle_initialize(1)
-    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.8"
+    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.9"
     listed = await handle_tools_list(2)
     assert {tool["name"] for tool in listed["result"]["tools"]} == PUBLIC_TOOLS
 
@@ -319,6 +321,39 @@ def test_localized_windows_app_alias(tmp_path, monkeypatch):
         {"id": "notepad", "name": "notepad", "path": "C:\\Windows\\notepad.exe", "confidence": 1}
     ]})
     assert search_apps("记事本", refresh_on_miss=False)[0]["id"] == "notepad"
+
+
+def test_calculator_miss_queries_start_apps_before_full_refresh(tmp_path, monkeypatch):
+    monkeypatch.setenv("REASONIX_MEMORY_DIR", str(tmp_path))
+    from reasonix_computer_use.system_profile import write_profile_and_index
+    from reasonix_computer_use import system_index
+
+    write_profile_and_index({"schema_version": 2, "applications": [
+        {"id": "nvidia-calc", "name": "Occupancy Calculator", "path": "", "confidence": 0.8}
+    ]})
+    calculator = {"id": "calc", "name": "计算器",
+                  "path": r"shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App",
+                  "launch_target": r"shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App",
+                  "source": "start-apps", "confidence": 0.9}
+    monkeypatch.setattr(system_index, "_scan_start_apps", lambda: [calculator])
+    monkeypatch.setattr(system_index, "build_index",
+                        lambda *_a, **_k: pytest.fail("full index refresh should not run"))
+    assert system_index.search_apps("Calculator")[0]["id"] == "calc"
+
+
+def test_start_apps_uses_utf8_for_localized_names(monkeypatch):
+    from reasonix_computer_use import system_index
+
+    class Completed:
+        stdout = '[{"Name":"计算器","AppID":"Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"}]'
+
+    calls = []
+    monkeypatch.setattr(system_index.subprocess, "run",
+                        lambda command, **kwargs: calls.append((command, kwargs)) or Completed())
+    apps = system_index._scan_start_apps()
+    assert apps[0]["name"] == "计算器"
+    assert "OutputEncoding" in calls[0][0][-1]
+    assert calls[0][1]["encoding"] == "utf-8"
 
 
 def test_uninstaller_is_not_a_launch_target(tmp_path):
@@ -620,6 +655,38 @@ def test_press_accepts_combined_shortcut_shape():
 
 
 @pytest.mark.asyncio
+async def test_select_cell_uses_spreadsheet_go_to(monkeypatch):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.runtime import WindowContext
+
+    calls = []
+
+    async def press(args):
+        calls.append(("press", args))
+        return json.dumps({"status": "ok"})
+
+    async def type_text(args):
+        calls.append(("type", args))
+        return json.dumps({"status": "ok"})
+
+    async def no_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(domain_tools, "_activate_for_keyboard", lambda _context: True)
+    monkeypatch.setattr(domain_tools, "computer_keyboard_press", press)
+    monkeypatch.setattr(domain_tools, "computer_keyboard_type", type_text)
+    monkeypatch.setattr(domain_tools.asyncio, "sleep", no_sleep)
+    result = await domain_tools._execute(WindowContext("w1", 1),
+                                         {"type": "select_cell", "cell": "a101"})
+    assert result["status"] == "ok"
+    assert result["cell"] == "A101"
+    assert calls[0] == ("press", {"key": "g", "modifiers": ["ctrl"]})
+    assert calls[1][0] == "type"
+    assert calls[1][1]["text"] == "A101"
+    assert calls[2] == ("press", {"key": "enter", "modifiers": []})
+
+
+@pytest.mark.asyncio
 async def test_targeted_type_selects_existing_text_before_sendinput(monkeypatch):
     from reasonix_computer_use import domain_tools
     from reasonix_computer_use.runtime import WindowContext
@@ -892,7 +959,7 @@ async def test_file_write_requires_confirmation(tmp_path):
 def test_manifest_and_docs_reference_new_api():
     root = Path(__file__).resolve().parent.parent
     manifest = json.loads((root / "reasonix-plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.8.0-alpha.8"
+    assert manifest["version"] == "0.8.0-alpha.9"
     assert "hooks" not in manifest
     routing = (root / "CLAUDE.md").read_text(encoding="utf-8")
     assert "chrome-devtools" in routing

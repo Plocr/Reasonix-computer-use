@@ -1,6 +1,6 @@
 {
   "name": "computer-use",
-  "version": "0.8.0-alpha.8",
+  "version": "0.8.0-alpha.9",
   "description": "Reasonix-native Windows computer use with system index, UIA, local OCR and visual fallback",
   "skills": "skills",
   "mcpServers": {

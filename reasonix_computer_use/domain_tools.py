@@ -270,7 +270,8 @@ def _goal_matches(items: list[dict[str, Any]], goal: str) -> list[dict[str, Any]
 
 
 def _bounded_element(item: dict[str, Any]) -> dict[str, Any]:
-    allowed = ("ref", "role", "name", "value", "rect", "actions", "id", "class", "confidence", "action")
+    allowed = ("ref", "role", "name", "value", "rect", "actions", "id", "class", "confidence",
+               "action", "focused", "selected")
     result = {key: item.get(key) for key in allowed if item.get(key) not in (None, "", [])}
     for key, maximum in (("name", 120), ("value", 120), ("id", 80), ("class", 80)):
         if key in result:
@@ -546,6 +547,25 @@ async def _execute(context: WindowContext, action: dict[str, Any]) -> dict[str, 
         amount = int(action.get("amount", 3))
         direction = action.get("direction", "down" if amount >= 0 else "up")
         return _parse_result(await computer_mouse_scroll({"direction": direction, "lines": abs(amount)}))
+    if kind == "select_cell":
+        cell = str(action.get("cell", "")).strip().upper()
+        if not re.fullmatch(r"[A-Z]{1,3}[1-9][0-9]{0,6}", cell):
+            return {"status": "error", "code": "invalid_cell", "message": "cell 必须是 A1 或 A101 格式"}
+        if not _activate_for_keyboard(context):
+            return {"status": "error", "code": "focus_denied",
+                    "message": "目标表格窗口不是前台窗口"}
+        opened = _parse_result(await computer_keyboard_press({"key": "g", "modifiers": ["ctrl"]}))
+        if opened.get("status") != "ok":
+            return opened
+        await asyncio.sleep(0.2)
+        typed = _parse_result(await computer_keyboard_type({"text": cell, "interval": 0.01}))
+        if typed.get("status") != "ok":
+            return typed
+        submitted = _parse_result(await computer_keyboard_press({"key": "enter", "modifiers": []}))
+        if submitted.get("status") != "ok":
+            return submitted
+        return {"status": "ok", "action": "select_cell", "cell": cell,
+                "method": "spreadsheet_go_to"}
     if kind == "type":
         target_ref = str(action.get("_target_ref") or context.focused_ref or "")
         if target_ref:
@@ -688,8 +708,9 @@ def _verify(context: WindowContext, expect: dict[str, Any], changed: bool) -> di
         "actions": {"type": "array", "minItems": 1, "maxItems": 5, "items": {
             "type": "object",
             "properties": {
-                "type": {"type": "string", "description": "动作种类，不要使用 action 或 command 字段。", "enum": ["click_ref", "click_text", "click_point", "move", "hover", "double_click", "right_click", "middle_click", "drag", "scroll", "type", "press", "key_down", "key_up", "wait"]},
+                "type": {"type": "string", "description": "动作种类，不要使用 action 或 command 字段。", "enum": ["click_ref", "click_text", "click_point", "move", "hover", "double_click", "right_click", "middle_click", "drag", "scroll", "select_cell", "type", "press", "key_down", "key_up", "wait"]},
                 "ref": {"type": "string"}, "text": {"type": "string"},
+                "cell": {"type": "string", "description": "select_cell 使用的单元格地址，例如 A1、A101"},
                 "x": {"type": "integer"}, "y": {"type": "integer"},
                 "from_x": {"type": "integer"}, "from_y": {"type": "integer"},
                 "to_x": {"type": "integer"}, "to_y": {"type": "integer"},
@@ -724,7 +745,7 @@ async def computer_action(args: dict) -> str:
         actions = [_normalize_action(action) for action in actions]
         supported = {"click_ref", "click_text", "click_point", "move", "hover", "double_click",
                      "right_click", "middle_click", "drag", "scroll", "type", "press", "key_down",
-                     "key_up", "wait"}
+                     "key_up", "select_cell", "wait"}
         if any(action.get("type") not in supported for action in actions):
             blocked = context.invalid_action()
             return parse_result({"status": "error", "code": "invalid_action_shape", "blocked": blocked,
