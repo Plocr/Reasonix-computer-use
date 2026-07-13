@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -44,7 +45,7 @@ async def test_mcp_initialize_and_list_report_08():
     from reasonix_computer_use.mcp_server import handle_initialize, handle_tools_list
 
     initialized = await handle_initialize(1)
-    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.9"
+    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.10"
     listed = await handle_tools_list(2)
     assert {tool["name"] for tool in listed["result"]["tools"]} == PUBLIC_TOOLS
 
@@ -959,11 +960,63 @@ async def test_file_write_requires_confirmation(tmp_path):
 def test_manifest_and_docs_reference_new_api():
     root = Path(__file__).resolve().parent.parent
     manifest = json.loads((root / "reasonix-plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.8.0-alpha.9"
-    assert "hooks" not in manifest
+    assert manifest["version"] == "0.8.0-alpha.10"
+    assert set(manifest["hooks"]) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"}
     routing = (root / "CLAUDE.md").read_text(encoding="utf-8")
     assert "chrome-devtools" in routing
     assert "computer_task_start" not in routing
+
+
+def test_route_guard_blocks_shell_for_explicit_gui_workflow(monkeypatch, tmp_path):
+    from hooks import route_guard
+
+    monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path)
+    session = "s1"
+    route_guard.handle({"hook_event_name": "UserPromptSubmit", "session_id": session,
+                        "prompt": "桌面新建Excel，然后使用计算器应用逐个相加并保存文件"})
+    result = route_guard.handle({"hook_event_name": "PreToolUse", "session_id": session,
+                                 "tool_name": "bash", "tool_input": {"command": "python task.py"}})
+    output = result["hookSpecificOutput"]
+    assert output["permissionDecision"] == "deny"
+    assert "computer_app" in output["permissionDecisionReason"]
+
+
+def test_route_guard_allows_user_requested_python(monkeypatch, tmp_path):
+    from hooks import route_guard
+
+    monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path)
+    session = "s2"
+    route_guard.handle({"hook_event_name": "UserPromptSubmit", "session_id": session,
+                        "prompt": "使用Python脚本在桌面创建Excel文件"})
+    assert route_guard.handle({"hook_event_name": "PreToolUse", "session_id": session,
+                               "tool_name": "bash", "tool_input": {"command": "python task.py"}}) is None
+
+
+def test_route_guard_does_not_affect_non_desktop_tasks(monkeypatch, tmp_path):
+    from hooks import route_guard
+
+    monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path)
+    session = "s3"
+    route_guard.handle({"hook_event_name": "UserPromptSubmit", "session_id": session,
+                        "prompt": "运行项目测试并修复失败"})
+    assert route_guard.handle({"hook_event_name": "PreToolUse", "session_id": session,
+                               "tool_name": "bash"}) is None
+
+
+def test_route_guard_launcher_emits_utf8_deny(tmp_path):
+    root = Path(__file__).resolve().parent.parent
+    env = dict(os.environ, LOCALAPPDATA=str(tmp_path))
+    prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "cli-test",
+              "prompt": "桌面新建Excel并使用计算器应用逐个相加"}
+    submitted = subprocess.run(["cmd", "/d", "/c", str(root / "reasonix-computer-use.bat"), "--hook"],
+                               input=json.dumps(prompt, ensure_ascii=False).encode("utf-8"),
+                               capture_output=True, env=env, timeout=10, check=True)
+    assert json.loads(submitted.stdout.decode("utf-8"))["hookSpecificOutput"]["additionalContext"]
+    before = {"hook_event_name": "PreToolUse", "session_id": "cli-test", "tool_name": "bash"}
+    blocked = subprocess.run(["cmd", "/d", "/c", str(root / "reasonix-computer-use.bat"), "--hook"],
+                             input=json.dumps(before).encode("utf-8"), capture_output=True,
+                             env=env, timeout=10, check=True)
+    assert json.loads(blocked.stdout.decode("utf-8"))["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 def test_readme_documents_git_dependencies_and_windows_release():
