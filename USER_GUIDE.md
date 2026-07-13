@@ -2,14 +2,13 @@
 
 ## 安装选择
 
-- 普通 Windows x64 用户：下载 GitHub Release 的自包含 ZIP，解压到
-  `C:\Users\<用户名>\ReasonixPlugins` 下，再在 Reasonix Desktop 的
-  “设置 → 插件 → 本地目录”中选择该目录，无需 Python。Reasonix 1.17.10 的桌面端
-  使用 link 模式，选择其他磁盘会触发 `link target escapes skill roots`。
+- 普通 Windows x64 用户：下载 GitHub Release 的安装器 EXE。安装器内置 Python、
+  OCR 和全部依赖，不需要 Git 或管理员权限；检测到 Reasonix CLI 时自动注册，否则
+  按提示在 Desktop 中选择安装目录。
 - Git 安装：在 Desktop 的“Git 仓库”中输入
   `git:github.com/Plocr/Reasonix-computer-use`。安装前只需准备 Python 3.10+；首次会话
   检测到依赖缺失时，Agent 经用户确认后调用 `computer_system(setup)` 后台安装，并用
-  `setup_status` 展示精简进度。不熟悉 Python 的用户仍建议使用自包含 ZIP。
+  `setup_status` 展示精简进度。不熟悉 Python 的用户应使用安装器 EXE。
 - 本地开发：执行 `python -m pip install -e ".[dev]"`，再使用
   `reasonix plugin install . --replace --yes`。只有源码位于 Reasonix 允许的目录内时
   才使用 `--link`；其他磁盘会被 `link target escapes skill roots` 安全检查拒绝。
@@ -48,7 +47,7 @@
 
 ## 系统画像更新
 
-首次 `SessionStart` 自动创建 `system.md` 和 `system-index.json`。以下情况自动或按需刷新：
+MCP 首次启动时后台创建 `system.md` 和 `system-index.json`。以下情况自动或按需刷新：
 
 - 应用搜索没有命中
 - 保存的 exe 不存在

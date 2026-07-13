@@ -13,7 +13,7 @@ computer_app(launch, query="应用名")
 → computer_action(revision, actions, expect)
 ```
 
-- SessionStart 若返回 `computer_use=setup_required`，先说明依赖将安装到当前用户目录。用户确认后调用 `computer_system(operation="setup", params={"confirmed":true})`，再按返回的 `poll_after_seconds` 轮询 `setup_status`；禁止自行通过 Shell 运行 pip。
+- 任一桌面工具若返回 `setup_required`，先说明依赖将安装到当前用户目录。用户确认后调用 `computer_system(operation="setup", params={"confirmed":true})`，再按返回的 `poll_after_seconds` 轮询 `setup_status`；禁止自行通过 Shell 运行 pip。
 - 启动应用默认直接调用 `computer_app(operation="launch", query="应用名")`。只有名称歧义或启动失败时才先 search；不要把应用名填入 `app_id`。
 - 保存 launch 返回的 `window_id`。聚焦和关闭时直接复用，不要为了找回窗口调用 `list_running`。
 - 禁止转用 Bash 或 PowerShell 全盘查找应用。

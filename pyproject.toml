@@ -1,6 +1,6 @@
 [project]
 name = "reasonix-computer-use"
-version = "0.8.0-alpha.4"
+version = "0.8.0-alpha.5"
 description = "Reasonix-native Windows computer use with UIA, local OCR and visual fallback"
 requires-python = ">=3.10"
 dependencies = [

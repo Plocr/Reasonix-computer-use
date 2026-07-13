@@ -42,7 +42,7 @@ async def test_mcp_initialize_and_list_report_08():
     from reasonix_computer_use.mcp_server import handle_initialize, handle_tools_list
 
     initialized = await handle_initialize(1)
-    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.4"
+    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.5"
     listed = await handle_tools_list(2)
     assert {tool["name"] for tool in listed["result"]["tools"]} == PUBLIC_TOOLS
 
@@ -330,6 +330,59 @@ def test_uninstaller_is_not_a_launch_target(tmp_path):
     app.touch()
     assert _launchable_executable(str(uninstaller)) is False
     assert _launchable_executable(str(app)) is True
+
+
+def test_launch_breaks_away_from_reasonix_job(monkeypatch, tmp_path):
+    from reasonix_computer_use import domain_tools
+
+    executable = tmp_path / "app.exe"
+    executable.touch()
+    calls = []
+
+    class Process:
+        pid = 1234
+
+    monkeypatch.setattr(domain_tools.subprocess, "Popen",
+                        lambda command, **kwargs: calls.append((command, kwargs)) or Process())
+    pid, _process = domain_tools._launch({"path": str(executable)})
+    assert pid == 1234
+    flags = calls[0][1]["creationflags"]
+    assert flags & domain_tools.CREATE_BREAKAWAY_FROM_JOB
+    assert flags & domain_tools.CREATE_DETACHED_PROCESS
+
+
+def test_launch_uses_shell_when_job_forbids_breakaway(monkeypatch, tmp_path):
+    from reasonix_computer_use import domain_tools
+
+    executable = tmp_path / "app.exe"
+    executable.touch()
+    launched = []
+
+    def denied(*_args, **_kwargs):
+        error = OSError("breakaway denied")
+        error.winerror = 5
+        raise error
+
+    monkeypatch.setattr(domain_tools.subprocess, "Popen", denied)
+    monkeypatch.setattr(domain_tools.os, "startfile",
+                        lambda path, **kwargs: launched.append((path, kwargs)))
+    pid, process = domain_tools._launch({"path": str(executable)})
+    assert (pid, process) == (0, None)
+    assert launched[0][0] == str(executable)
+
+
+@pytest.mark.asyncio
+async def test_missing_environment_blocks_app_before_launch(monkeypatch):
+    from reasonix_computer_use import domain_tools
+
+    monkeypatch.setattr(domain_tools, "environment_status",
+                        lambda: {"ready": False, "missing": ["pyautogui"]})
+    monkeypatch.setattr(domain_tools, "search_apps",
+                        lambda *_args, **_kwargs: pytest.fail("application search must not run"))
+    result = json.loads(await domain_tools.computer_app({"operation": "launch", "query": "QQ"}))
+    assert result["status"] == "setup_required"
+    assert result["blocked"] is True
+    assert result["recommended_tool"] == "computer_system"
 
 
 @pytest.mark.asyncio
@@ -696,8 +749,8 @@ async def test_file_write_requires_confirmation(tmp_path):
 def test_manifest_and_docs_reference_new_api():
     root = Path(__file__).resolve().parent.parent
     manifest = json.loads((root / "reasonix-plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.8.0-alpha.4"
-    assert "SessionStart" in manifest["hooks"]
+    assert manifest["version"] == "0.8.0-alpha.5"
+    assert "hooks" not in manifest
     routing = (root / "CLAUDE.md").read_text(encoding="utf-8")
     assert "chrome-devtools" in routing
     assert "computer_task_start" not in routing
@@ -710,6 +763,7 @@ def test_readme_documents_git_dependencies_and_windows_release():
     for dependency in ("pyautogui", "Pillow", "comtypes", "rapidocr-onnxruntime"):
         assert dependency in readme
     assert "windows-x64.zip" in readme
+    assert "windows-x64-setup.exe" in readme
     assert "无需安装 Python" in readme
 
 
@@ -731,7 +785,21 @@ def test_windows_release_workflow_builds_and_publishes_assets():
     assert "workflow_dispatch" in workflow
     assert 'tags:' in workflow
     assert "build_release.ps1" in workflow
+    assert "build_installer.ps1" in workflow
+    assert "innosetup" in workflow
     assert "actions/upload-artifact@v4" in workflow
     assert "gh @arguments" in workflow
     assert "dist/*.sha256" in workflow
+    assert "dist/*.exe" in workflow
     assert "$assets = Get-ChildItem dist" in workflow
+
+
+def test_windows_installer_is_user_scoped_and_registers_plugin():
+    root = Path(__file__).resolve().parent.parent
+    installer = (root / "installer" / "reasonix-computer-use.iss").read_text(encoding="utf-8")
+    builder = (root / "scripts" / "build_installer.ps1").read_text(encoding="utf-8")
+    assert "PrivilegesRequired=lowest" in installer
+    assert "{localappdata}\\ReasonixPlugins\\computer-use" in installer
+    assert "reasonix plugin install" in installer
+    assert "Inno Setup 6" in builder
+    assert "Get-FileHash" in builder

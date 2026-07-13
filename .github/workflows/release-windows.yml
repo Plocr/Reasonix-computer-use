@@ -37,7 +37,15 @@ jobs:
 
       - name: Build self-contained Windows package
         shell: pwsh
-        run: ./scripts/build_release.ps1
+        run: ./scripts/build_release.ps1 -KeepStage
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress --yes
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: ./scripts/build_installer.ps1
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -45,6 +53,7 @@ jobs:
           name: reasonix-computer-use-windows-x64
           path: |
             dist/*.zip
+            dist/*.exe
             dist/*.sha256
           if-no-files-found: error
 

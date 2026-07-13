@@ -39,10 +39,27 @@ DEFAULT_ELEMENTS = 40
 MAX_BATCH = 5
 OCR_MIN_CONFIDENCE = 0.65
 SENSITIVE_WORDS = ("密码", "验证码", "支付", "付款", "购买", "删除", "卸载", "协议", "password", "captcha", "payment")
+CREATE_DETACHED_PROCESS = 0x00000008
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 
 def _ok(**values: Any) -> str:
     return parse_result({"status": "ok", **values})
+
+
+def _environment_gate() -> str | None:
+    status = environment_status()
+    if status.get("ready"):
+        return None
+    return parse_result({
+        "status": "setup_required",
+        "blocked": True,
+        "missing": status.get("missing", []),
+        "message": "Computer Use 运行依赖尚未安装",
+        "recommended_tool": "computer_system",
+        "recommended_args": {"operation": "setup", "params": {"confirmed": True}},
+        "next_hint": "先告知用户将下载依赖并获得确认，再调用 setup；禁止继续启动应用",
+    })
 
 
 def _public_app(item: dict[str, Any]) -> dict[str, Any]:
@@ -76,8 +93,12 @@ def _find_app_window(app: dict[str, Any], pid: int = 0, timeout: float = 8.0):
 def _launch(app: dict[str, Any]) -> tuple[int, Any]:
     target = str(app.get("launch_target") or app.get("path") or "")
     if target.casefold().startswith("shell:appsfolder\\"):
-        process = subprocess.Popen(["explorer.exe", target],
-                                   creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        explorer = str(Path(os.environ.get("WINDIR", r"C:\Windows")) / "explorer.exe")
+        process = subprocess.Popen([explorer, target], stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   close_fds=True,
+                                   creationflags=(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                                                  | CREATE_DETACHED_PROCESS))
         return process.pid, process
     if not target or not os.path.isfile(target):
         raise FileNotFoundError(f"应用启动目标不存在：{target or app.get('name')}")
@@ -85,9 +106,21 @@ def _launch(app: dict[str, Any]) -> tuple[int, Any]:
     command = [target]
     if args:
         command.extend(shlex.split(args, posix=False))
-    process = subprocess.Popen(command, cwd=str(Path(target).parent),
-                               creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
-    return process.pid, process
+    flags = (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+             | CREATE_DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB)
+    try:
+        process = subprocess.Popen(command, cwd=str(Path(target).parent),
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, close_fds=True,
+                                   creationflags=flags)
+        return process.pid, process
+    except OSError as exc:
+        if getattr(exc, "winerror", None) not in (5, 87):
+            raise
+        # Some hosts use a Job Object that forbids explicit breakaway. Delegate
+        # to the Windows shell so Explorer can own the application process.
+        os.startfile(target, arguments=args or None, cwd=str(Path(target).parent))
+        return 0, None
 
 
 def _prime_window_state(context: WindowContext, info) -> None:
@@ -114,6 +147,9 @@ def _prime_window_state(context: WindowContext, info) -> None:
 async def computer_app(args: dict) -> str:
     operation = args.get("operation")
     try:
+        gate = _environment_gate()
+        if gate:
+            return gate
         if operation == "search":
             query = str(args.get("query", "")).strip()
             if not query:
@@ -266,6 +302,9 @@ def _image_digest(image) -> str:
         "required": ["window_id", "goal"]})
 async def computer_state(args: dict) -> str:
     try:
+        gate = _environment_gate()
+        if gate:
+            return gate
         context = REGISTRY.get(str(args["window_id"]))
         if context.hard_blocked:
             return _ok(window=window_payload(context), revision=context.revision, source="none", elements=[],
@@ -629,6 +668,9 @@ def _verify(context: WindowContext, expect: dict[str, Any], changed: bool) -> di
         }}}, "required": ["window_id", "revision", "actions"]})
 async def computer_action(args: dict) -> str:
     try:
+        gate = _environment_gate()
+        if gate:
+            return gate
         context = REGISTRY.get(str(args["window_id"]))
         if str(args.get("revision")) != context.revision:
             return tool_error("stale_revision", "窗口状态已变化；请调用 computer_state 获取最新 revision")
