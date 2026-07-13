@@ -42,7 +42,7 @@ async def test_mcp_initialize_and_list_report_08():
     from reasonix_computer_use.mcp_server import handle_initialize, handle_tools_list
 
     initialized = await handle_initialize(1)
-    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.6"
+    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.7"
     listed = await handle_tools_list(2)
     assert {tool["name"] for tool in listed["result"]["tools"]} == PUBLIC_TOOLS
 
@@ -558,6 +558,53 @@ async def test_input_like_combobox_is_focused_instead_of_expanded(monkeypatch):
     assert calls[0]["action"] == "focus"
 
 
+def test_press_accepts_combined_shortcut_shape():
+    from reasonix_computer_use.domain_tools import _press_parts
+
+    assert _press_parts(["CTRL+L"]) == ("L", ["CTRL"])
+    assert _press_parts(["ALT", "D"]) == ("D", ["ALT"])
+
+
+@pytest.mark.asyncio
+async def test_targeted_type_selects_existing_text_before_sendinput(monkeypatch):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.runtime import WindowContext
+
+    context = WindowContext("w1", 1)
+    context.focused_ref = "e1"
+    selected = []
+
+    async def uia_act(_args):
+        return json.dumps({"status": "error", "code": "pattern_unavailable"})
+
+    async def select_all():
+        selected.append(True)
+        return {"status": "ok"}
+
+    async def keyboard_type(args):
+        return json.dumps({"status": "ok", "method": "send_input",
+                           "text_length": len(args["text"])})
+
+    monkeypatch.setattr(domain_tools, "uia_act", uia_act)
+    monkeypatch.setattr(domain_tools, "_activate_for_keyboard", lambda _context: True)
+    monkeypatch.setattr(domain_tools, "_select_all", select_all)
+    monkeypatch.setattr(domain_tools, "computer_keyboard_type", keyboard_type)
+    result = await domain_tools._execute(context, {"type": "type", "text": "deepseek"})
+    assert result["status"] == "ok"
+    assert selected == [True]
+
+
+def test_ocr_rejects_occluded_target_window(monkeypatch):
+    from reasonix_computer_use import text_vision
+    from reasonix_computer_use.windows import WindowInfo
+
+    info = WindowInfo(11, "Edge", "Chrome_WidgetWin_1", (0, 0, 800, 600))
+    monkeypatch.setattr(text_vision, "_capture_window", lambda *_a, **_k: (object(), info))
+    monkeypatch.setattr(text_vision.user32, "GetForegroundWindow", lambda: 22)
+    with pytest.raises(RuntimeError, match="前台焦点"):
+        text_vision.scan_text("w1")
+
+
 @pytest.mark.asyncio
 async def test_failed_sendinput_uses_one_verified_clipboard_fallback(monkeypatch):
     from reasonix_computer_use import domain_tools
@@ -791,7 +838,7 @@ async def test_file_write_requires_confirmation(tmp_path):
 def test_manifest_and_docs_reference_new_api():
     root = Path(__file__).resolve().parent.parent
     manifest = json.loads((root / "reasonix-plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.8.0-alpha.6"
+    assert manifest["version"] == "0.8.0-alpha.7"
     assert "hooks" not in manifest
     routing = (root / "CLAUDE.md").read_text(encoding="utf-8")
     assert "chrome-devtools" in routing

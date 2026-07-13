@@ -464,6 +464,27 @@ async def _click_ref(context: WindowContext, ref: str) -> dict[str, Any]:
     return _parse_result(await uia_act({"ref": ref, "action": semantic, "verify": True}))
 
 
+def _activate_for_keyboard(context: WindowContext) -> bool:
+    try:
+        activate_window(context.hwnd)
+    except OSError:
+        pass
+    return user32.GetForegroundWindow() == context.hwnd
+
+
+def _press_parts(keys: Any) -> tuple[str, list[str]]:
+    values = [keys] if isinstance(keys, str) else list(keys or [])
+    if len(values) == 1 and "+" in str(values[0]):
+        values = [part.strip() for part in str(values[0]).split("+") if part.strip()]
+    if not values:
+        return "", []
+    return str(values[-1]), [str(value) for value in values[:-1]]
+
+
+async def _select_all() -> dict[str, Any]:
+    return _parse_result(await computer_keyboard_press({"key": "a", "modifiers": ["ctrl"]}))
+
+
 async def _execute(context: WindowContext, action: dict[str, Any]) -> dict[str, Any]:
     kind = action.get("type")
     if kind == "click_ref":
@@ -515,22 +536,23 @@ async def _execute(context: WindowContext, action: dict[str, Any]) -> dict[str, 
             if result.get("status") == "ok":
                 result["method"] = "uia_value"
                 return result
-        try:
-            activate_window(context.hwnd)
-        except OSError:
-            if user32.GetForegroundWindow() != context.hwnd:
-                return {"status": "error", "code": "focus_denied", "message": "目标窗口未获得键盘焦点"}
-        if user32.GetForegroundWindow() != context.hwnd:
+        if not _activate_for_keyboard(context):
             return {"status": "error", "code": "focus_denied",
                     "message": "目标窗口不是前台窗口，已拒绝键盘注入"}
+        if target_ref and action.get("replace", True):
+            selected = await _select_all()
+            if selected.get("status") != "ok":
+                return selected
         return _parse_result(await computer_keyboard_type({"text": str(action.get("text", "")),
                                                             "interval": min(float(action.get("interval", 0.01)), 0.1)}))
     if kind == "press":
-        keys = action.get("keys", [])
-        keys = [keys] if isinstance(keys, str) else list(keys)
-        if not keys:
+        key, modifiers = _press_parts(action.get("keys", []))
+        if not key:
             return {"status": "error", "code": "missing_keys"}
-        return _parse_result(await computer_keyboard_press({"key": keys[-1], "modifiers": keys[:-1]}))
+        if not _activate_for_keyboard(context):
+            return {"status": "error", "code": "focus_denied",
+                    "message": "目标窗口不是前台窗口，已拒绝键盘注入"}
+        return _parse_result(await computer_keyboard_press({"key": key, "modifiers": modifiers}))
     if kind in ("key_down", "key_up"):
         key = str(action.get("key", "")).casefold()
         if key not in VK_MAP:
@@ -659,6 +681,7 @@ def _verify(context: WindowContext, expect: dict[str, Any], changed: bool) -> di
                 "direction": {"type": "string", "enum": ["up", "down"]},
                 "seconds": {"type": "number"}, "duration": {"type": "number"},
                 "interval": {"type": "number"}, "steps": {"type": "integer"},
+                "replace": {"type": "boolean", "default": True},
                 "exact": {"type": "boolean"},
                 "index": {"type": "integer"}, "confirmed": {"type": "boolean"},
                 "purpose": {"type": "string"}

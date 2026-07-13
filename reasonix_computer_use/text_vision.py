@@ -52,7 +52,9 @@ def prewarm_ocr() -> bool:
 def scan_text(window_id: str, max_results: int = 100) -> dict:
     import numpy as np
 
-    image, info = _capture_window(window_id, activate=False)
+    image, info = _capture_window(window_id, activate=True)
+    if user32.GetForegroundWindow() != info.hwnd:
+        raise RuntimeError("目标窗口未获得前台焦点，已拒绝对遮挡区域执行 OCR")
     result, _ = _ocr()(np.asarray(image))
     matches = []
     for box, recognized, confidence in result or []:
