@@ -303,17 +303,29 @@ async def computer_keyboard_press(args: dict) -> str:
     modifiers = args.get("modifiers", [])
     
     try:
+        invalid_modifiers = [str(mod) for mod in modifiers
+                             if str(mod).lower().strip() not in MODIFIER_KEYS]
+        if invalid_modifiers:
+            return parse_result({"status": "error", "code": "invalid_modifier",
+                                 "message": f"Unknown modifier: {', '.join(invalid_modifiers)}"})
         # Resolve virtual key code
         if key in VK_MAP:
             vk_code = VK_MAP[key]
-        elif len(key) == 1 and key.isalnum():
-            # Single character: use VkKeyScan
-            vk_code = ctypes.windll.user32.VkKeyScanW(ord(key.upper()))
-            if vk_code == -1:
-                return parse_result({"error": f"Cannot resolve key: {key}"})
-            vk_code = vk_code & 0xFF
+        elif len(key) == 1 and key.isprintable():
+            # VkKeyScan also reports implicit Shift/Ctrl/Alt requirements for
+            # punctuation such as +, =, ; and `.
+            scan = ctypes.windll.user32.VkKeyScanW(ord(key))
+            if scan == -1:
+                return parse_result({"status": "error", "code": "unknown_key",
+                                     "message": f"Cannot resolve key: {key}"})
+            vk_code = scan & 0xFF
+            shift_state = (scan >> 8) & 0xFF
+            implicit = [name for bit, name in ((1, "shift"), (2, "ctrl"), (4, "alt"))
+                        if shift_state & bit]
+            modifiers = list(dict.fromkeys([*(str(mod) for mod in modifiers), *implicit]))
         else:
-            return parse_result({"error": f"Unknown key: {key}"})
+            return parse_result({"status": "error", "code": "unknown_key",
+                                 "message": f"Unknown key: {key}"})
         
         # Press modifiers
         for mod in modifiers:

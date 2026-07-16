@@ -31,6 +31,7 @@ class WindowContext:
     app_name: str = ""
     app_path: str = ""
     app_fingerprint: str = ""
+    owner_pid: int = 0
     revision_no: int = 0
     revision: str = "r0"
     state_hash: str = ""
@@ -58,8 +59,13 @@ class WindowContext:
             if exact:
                 self.hwnd = exact[0].hwnd
                 return exact[0]
+        if self.owner_pid:
+            owned = [item for item in candidates if item.pid == self.owner_pid]
+            if owned:
+                self.hwnd = owned[0].hwnd
+                return owned[0]
         if self.app_name:
-            named = [item for item in candidates if self.app_name.casefold() in item.title.casefold()]
+            named = [item for item in candidates if self.app_name.casefold() == item.title.casefold()]
             if named:
                 self.hwnd = named[0].hwnd
                 return named[0]
@@ -132,6 +138,7 @@ class WindowRegistry:
         with self._lock:
             for context in self._contexts.values():
                 if context.hwnd == info.hwnd:
+                    context.owner_pid = info.pid
                     if app:
                         context.app_id = str(app.get("id", ""))
                         context.app_name = str(app.get("name", ""))
@@ -140,6 +147,7 @@ class WindowRegistry:
                     return context
                 if app and context.app_id and context.app_id == app.get("id"):
                     context.hwnd = info.hwnd
+                    context.owner_pid = info.pid
                     context.app_path = info.process_path or str(app.get("path", ""))
                     context.app_fingerprint = _hash({key: app.get(key, "") for key in ("id", "version", "sha256")})
                     return context
@@ -149,6 +157,7 @@ class WindowRegistry:
                 window_id=window_id, hwnd=info.hwnd, app_id=str((app or {}).get("id", "")),
                 app_name=str((app or {}).get("name", "")), app_path=info.process_path or str((app or {}).get("path", "")),
                 app_fingerprint=_hash({key: (app or {}).get(key, "") for key in ("id", "version", "sha256")}),
+                owner_pid=info.pid,
             )
             context.update(_window_state(info), "window")
             self._contexts[window_id] = context
@@ -230,6 +239,8 @@ def read_app_memory(context: WindowContext) -> dict[str, Any]:
 
 
 def remember_success(context: WindowContext, action: dict[str, Any], before: str, after: str) -> None:
+    if not before or not after or before == after:
+        return
     if action.get("type") in ("click_point", "type"):
         return
     data = read_app_memory(context)

@@ -25,7 +25,8 @@ from .mouse import computer_mouse_click, computer_mouse_move, computer_mouse_scr
 from .runtime import (REGISTRY, STRATEGIES, WindowContext, memory_candidates, remember_success,
                       semantic_state, window_payload)
 from .screenshot import _capture_window, _get_screenshot_dir
-from .system_index import build_index, enrich_index, ensure_index, find_app, query_profile, search_apps
+from .system_index import (build_index, enrich_index, ensure_index, find_app, is_strong_app_match,
+                           query_profile, search_apps)
 from .text_vision import find_text, scan_text
 from .ui_tree import computer_act as uia_act
 from .ui_tree import observe
@@ -75,14 +76,17 @@ def _find_app_window(app: dict[str, Any], pid: int = 0, timeout: float = 8.0):
     stem = Path(target).stem.casefold() if target else ""
     best = None
     while time.monotonic() < deadline:
-        candidates = list_windows()
+        candidates = [item for item in list_windows()
+                      if item.rect[0] > -30000 and item.rect[1] > -30000
+                      and item.rect[2] - item.rect[0] >= 50 and item.rect[3] - item.rect[1] >= 30]
         exact = [item for item in candidates if target and item.process_path.casefold() == target]
-        exact_title = [item for item in candidates if name and item.title.casefold() == name]
+        exact_title = [item for item in candidates if name and item.title.casefold() == name
+                       and item.rect[0] > -30000 and item.rect[1] > -30000]
         process = [item for item in candidates if pid and not target.startswith("shell:") and item.pid == pid]
-        titled = [item for item in candidates if name and item.title.casefold().startswith(name)
-                  and item.class_name != "CabinetWClass"]
         executable = [item for item in candidates if stem and Path(item.process_path).stem.casefold() == stem]
-        ranked = exact or exact_title or process or titled or executable
+        # A title can mention another application (for example an Edge tab named
+        # "WPS"). Never use a partial title match as application identity.
+        ranked = exact or process or executable or exact_title
         if ranked:
             best = max(ranked, key=lambda item: (item.rect[2] - item.rect[0]) * (item.rect[3] - item.rect[1]))
             break
@@ -140,10 +144,11 @@ def _prime_window_state(context: WindowContext, info) -> None:
     name="computer_app",
     description="查找、启动、聚焦或关闭 Windows 应用。启动默认直接传 query；app_id 只能使用搜索结果。关闭优先复用启动响应的 window_id。禁止 Shell 搜索。",
     schema={"type": "object", "properties": {
-        "operation": {"type": "string", "enum": ["search", "launch", "focus", "list_running", "close"]},
+        "operation": {"type": "string", "enum": ["search", "launch", "open_file", "focus", "list_running", "close"]},
         "query": {"type": "string", "description": "应用名称。launch 时优先直接使用，例如 Notepad。"},
         "app_id": {"type": "string", "description": "仅使用 search 返回的 id；普通应用名应传 query。"},
         "window_id": {"type": "string", "description": "launch 返回的窗口 id；focus/close 应原样复用。"},
+        "path": {"type": "string", "description": "open_file 使用的现有文件绝对路径。"},
         "close_mode": {"type": "string", "enum": ["window", "process"], "default": "window"},
         "confirmed": {"type": "boolean", "default": False},
         "limit": {"type": "integer", "default": 10}}, "required": ["operation"]})
@@ -164,6 +169,55 @@ async def computer_app(args: dict) -> str:
         if operation == "list_running":
             return _ok(windows=REGISTRY.running(min(int(args.get("limit", 10)), 20)),
                        next_hint="使用 window_id 调用 computer_state")
+        if operation == "open_file":
+            file_path = Path(str(args.get("path", ""))).expanduser()
+            if not file_path.is_absolute() or not file_path.is_file():
+                return tool_error("file_not_found", "open_file 必须提供存在的文件绝对路径")
+            app = find_app(str(args.get("app_id", ""))) if args.get("app_id") else None
+            if app is None and args.get("query"):
+                matches = search_apps(str(args["query"]), 10)
+                strong = [item for item in matches if is_strong_app_match(str(args["query"]), item)]
+                app = strong[0] if strong else None
+                if app is None:
+                    return tool_error("ambiguous_app", "未找到可安全用于打开文件的精确应用")
+            before_handles = {item.hwnd for item in list_windows()}
+            pid = 0
+            if app:
+                target = str(app.get("launch_target") or app.get("path") or "")
+                if not target or not os.path.isfile(target):
+                    return tool_error("stale_app_path", "指定应用启动路径无效")
+                flags = (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                         | CREATE_DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB)
+                try:
+                    process = subprocess.Popen([target, str(file_path)], cwd=str(Path(target).parent),
+                                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                               stderr=subprocess.DEVNULL, close_fds=True,
+                                               creationflags=flags)
+                    pid = process.pid
+                except OSError as exc:
+                    if getattr(exc, "winerror", None) not in (5, 87):
+                        raise
+                    os.startfile(str(file_path))
+            else:
+                os.startfile(str(file_path))
+            deadline = time.monotonic() + 8
+            info = None
+            while time.monotonic() < deadline:
+                candidates = list_windows()
+                named = [item for item in candidates if file_path.stem.casefold() in item.title.casefold()]
+                created = [item for item in candidates if item.hwnd not in before_handles]
+                owned = [item for item in candidates if pid and item.pid == pid]
+                ranked = named or owned or created
+                if ranked:
+                    info = max(ranked, key=lambda item: (item.rect[2] - item.rect[0]) * (item.rect[3] - item.rect[1]))
+                    break
+                time.sleep(0.15)
+            if not info:
+                return tool_error("window_not_found", "文件已交给系统打开，但未发现对应窗口", retryable=True)
+            context = REGISTRY.register(info, app)
+            _prime_window_state(context, info)
+            return _ok(file=str(file_path), app=_public_app(app or {}),
+                       window=window_payload(context, info), next_hint="调用 computer_state")
         if operation == "launch":
             app = find_app(str(args.get("app_id", ""))) if args.get("app_id") else None
             normalized_query = ""
@@ -171,7 +225,8 @@ async def computer_app(args: dict) -> str:
                 # Be forgiving when a model puts an application name in app_id.
                 normalized_query = str(args["app_id"])
                 matches = search_apps(normalized_query, 10)
-                app = matches[0] if matches else None
+                strong = [item for item in matches if is_strong_app_match(normalized_query, item)]
+                app = strong[0] if strong else None
             if app is None and args.get("query"):
                 matches = search_apps(str(args["query"]), 10)
                 if not matches:
@@ -179,7 +234,17 @@ async def computer_app(args: dict) -> str:
                                       fallback="请用户确认应用名称或安装位置")
                 launchable = [item for item in matches if str(item.get("launch_target") or item.get("path") or "")]
                 exact = [item for item in launchable if str(item.get("name", "")).casefold() == str(args["query"]).casefold()]
-                app = (exact or launchable or matches)[0]
+                if exact:
+                    app = exact[0]
+                else:
+                    strong = [item for item in launchable if is_strong_app_match(str(args["query"]), item)]
+                    if not strong:
+                        return parse_result({"status": "error", "code": "ambiguous_app",
+                                             "message": f"没有可安全启动的精确应用：{args['query']}",
+                                             "matches": [_public_app(item) for item in launchable[:5]],
+                                             "retryable": False,
+                                             "next_hint": "从候选中选择 app_id；目录位置请使用 computer_system(profile)"})
+                    app = strong[0]
             if app is None:
                 return tool_error("app_not_found", "必须提供有效 app_id 或 query")
             existing = _find_app_window(app, timeout=0.2)
@@ -269,6 +334,24 @@ def _goal_matches(items: list[dict[str, Any]], goal: str) -> list[dict[str, Any]
     return matches
 
 
+def _spreadsheet_hint(info, goal: str) -> dict[str, Any]:
+    text = f"{info.title} {goal}".casefold()
+    if info.class_name in ("OpusApp", "XLMAIN") and any(value in text for value in
+                                                         ("表格", "单元格", ".xlsx", ".xls", "范围", "a1")):
+        hint: dict[str, Any] = {
+            "available_actions": ["select_cell", "select_range"],
+            "selection_rule": "先用 select_cell/select_range 定位，并在动作结果中确认 selected=true；禁止按 F5 或猜网格坐标",
+        }
+        range_match = re.search(r"\b([A-Z]{1,3}[1-9][0-9]{0,6}:[A-Z]{1,3}[1-9][0-9]{0,6})\b", goal.upper())
+        cell_match = re.search(r"\b([A-Z]{1,3}[1-9][0-9]{0,6})\b", goal.upper())
+        if range_match:
+            hint["recommended_action"] = {"type": "select_range", "range": range_match.group(1)}
+        elif cell_match:
+            hint["recommended_action"] = {"type": "select_cell", "cell": cell_match.group(1)}
+        return hint
+    return {}
+
+
 def _bounded_element(item: dict[str, Any]) -> dict[str, Any]:
     allowed = ("ref", "role", "name", "value", "rect", "actions", "id", "class", "confidence",
                "action", "focused", "selected")
@@ -328,7 +411,8 @@ async def computer_state(args: dict) -> str:
             return _ok(window=window_payload(context, info), revision=context.revision, source="uia",
                        unchanged=True, elements=[] if blocked else [_bounded_element(item) for item in cached_matches[:limit]],
                        progress="同一窗口连续观察未执行动作，已熔断" if blocked else "复用当前 revision 的 UIA 缓存",
-                       blocked=blocked, next_hint="停止重复观察并报告阻断" if blocked else "不要重复观察；使用缓存 ref 执行动作")
+                       blocked=blocked, next_hint="停止重复观察并报告阻断" if blocked else "不要重复观察；使用缓存 ref 执行动作",
+                       **_spreadsheet_hint(info, goal))
         if same_revision and context.source == "ocr" and cached_matches and context.strategy_level < 3:
             blocked = context.state_read()
             return _ok(window=window_payload(context, info), revision=context.revision, source="ocr",
@@ -358,7 +442,8 @@ async def computer_state(args: dict) -> str:
                 return _ok(window=window_payload(context, info), revision=context.revision, source="uia",
                            elements=[] if blocked else elements,
                            progress="同一状态重复观察已熔断" if blocked else "UIA 已找到相关控件", blocked=blocked,
-                           next_hint="停止重复观察并报告阻断" if blocked else "使用 click_ref；无需截图")
+                           next_hint="停止重复观察并报告阻断" if blocked else "使用 click_ref；无需截图",
+                           **_spreadsheet_hint(info, goal))
         except Exception as exc:
             if str(exc) != "cached_revision_has_no_matching_target":
                 errors["uia"] = str(exc)[:300]
@@ -374,7 +459,8 @@ async def computer_state(args: dict) -> str:
                                    blocked=True, next_hint="停止重复观察并请求用户介入")
                     return _ok(window=window_payload(context, info), revision=context.revision, source="ocr",
                                elements=ocr_items, progress="本地 OCR 已找到相关文字", blocked=False,
-                               next_hint="使用 click_text；不会调用外部视觉模型")
+                               next_hint="使用 click_text；不会调用外部视觉模型",
+                               **_spreadsheet_hint(info, goal))
             except Exception as exc:
                 errors["ocr"] = str(exc)[:300]
         if mode in ("auto", "visual"):
@@ -494,8 +580,146 @@ def _press_parts(keys: Any) -> tuple[str, list[str]]:
     return str(values[-1]), [str(value) for value in values[:-1]]
 
 
+def _validate_shortcut(key: str, modifiers: list[str]) -> str:
+    valid_modifiers = {"ctrl", "alt", "shift", "win", "meta"}
+    invalid = [value for value in modifiers if value.casefold() not in valid_modifiers]
+    if invalid:
+        return f"未知修饰键：{', '.join(invalid)}"
+    lowered = key.casefold()
+    if lowered not in VK_MAP and not (len(key) == 1 and key.isprintable()):
+        return f"未知按键：{key}"
+    return ""
+
+
+def _requires_observable_change(action: dict[str, Any]) -> bool:
+    kind = action.get("type")
+    if kind in ("click_ref", "click_text", "click_point", "double_click", "right_click",
+                "middle_click", "drag", "scroll"):
+        return True
+    if kind == "press":
+        key, modifiers = _press_parts(action.get("keys", []))
+        combo = (key.casefold(), frozenset(value.casefold() for value in modifiers))
+        return combo not in {("c", frozenset({"ctrl"})), ("s", frozenset({"ctrl"}))}
+    return False
+
+
 async def _select_all() -> dict[str, Any]:
     return _parse_result(await computer_keyboard_press({"key": "a", "modifiers": ["ctrl"]}))
+
+
+def _selection_matches(elements: list[dict[str, Any]], target: str) -> bool:
+    wanted = target.casefold()
+    for item in elements:
+        value = str(item.get("value", "")).strip().casefold()
+        name = str(item.get("name", "")).strip().casefold()
+        role = str(item.get("role", ""))
+        if value == wanted and role in ("Edit", "ComboBox", "DataItem"):
+            return True
+        if item.get("selected") and (name == wanted or value == wanted):
+            return True
+    return False
+
+
+def _active_office_application():
+    try:
+        import comtypes.client
+    except ImportError:
+        return None
+    for progid in ("Excel.Application", "KET.Application", "ket.Application"):
+        try:
+            return comtypes.client.GetActiveObject(progid)
+        except Exception:
+            continue
+    return None
+
+
+def _office_selection_address() -> str:
+    application = _active_office_application()
+    if application is None:
+        return ""
+    try:
+        selection = application.ActiveWindow.RangeSelection
+        return str(selection.Address(False, False)).replace("$", "").upper()
+    except Exception:
+        return ""
+
+
+async def _verify_spreadsheet_selection(context: WindowContext, target: str) -> bool:
+    if _office_selection_address() == target.upper():
+        return True
+    await asyncio.sleep(0.15)
+    try:
+        result = observe(hex(context.hwnd), "interactive", MAX_ELEMENTS)
+        elements = result.get("elements", [])
+        if _selection_matches(elements, target):
+            context.elements = elements
+            return True
+    except Exception:
+        pass
+    return False
+
+
+async def _save_as(context: WindowContext, action: dict[str, Any]) -> dict[str, Any]:
+    destination = Path(str(action.get("path", ""))).expanduser()
+    if not destination.is_absolute() or not destination.parent.is_dir():
+        return {"status": "error", "code": "invalid_save_path",
+                "message": "save_as 必须提供父目录已存在的绝对路径"}
+    if destination.exists() and not action.get("confirmed"):
+        return {"status": "error", "code": "confirmation_required",
+                "message": "目标文件已存在，覆盖前需要 confirmed=true"}
+    if context.info().class_name not in ("XLMAIN", "OpusApp"):
+        return {"status": "error", "code": "unsupported_save_as",
+                "message": "当前 save_as 仅支持 Excel 和 WPS 表格"}
+    if not _activate_for_keyboard(context):
+        return {"status": "error", "code": "focus_denied"}
+    application = _active_office_application()
+    if application is not None:
+        try:
+            application.ActiveWorkbook.SaveAs(str(destination))
+            if destination.is_file():
+                return {"status": "ok", "action": "save_as", "path": str(destination),
+                        "verified": True, "method": "office-automation"}
+        except Exception:
+            pass
+    opened = _parse_result(await computer_keyboard_press({"key": "f12", "modifiers": []}))
+    if opened.get("status") != "ok":
+        return opened
+    await asyncio.sleep(0.5)
+    foreground = user32.GetForegroundWindow()
+    if foreground:
+        try:
+            info = get_window_info(foreground)
+            if info.pid == context.owner_pid:
+                context.hwnd = foreground
+        except (ValueError, OSError):
+            pass
+    try:
+        elements = observe(hex(context.hwnd), "interactive", MAX_ELEMENTS).get("elements", [])
+    except Exception as exc:
+        return {"status": "error", "code": "save_dialog_unavailable", "message": str(exc)[:160]}
+    editor = next((item for item in elements if item.get("role") in ("Edit", "ComboBox")
+                   and any(token in str(item.get("name", "")).casefold()
+                           for token in ("文件名", "file name", "filename"))), None)
+    editor = editor or next((item for item in elements
+                             if item.get("role") in ("Edit", "ComboBox") and item.get("focused")), None)
+    if not editor:
+        return {"status": "error", "code": "save_filename_not_found",
+                "message": "保存界面未暴露文件名输入框"}
+    entered = _parse_result(await uia_act({"ref": editor["ref"], "action": "set_value",
+                                           "value": str(destination), "verify": True}))
+    if entered.get("status") != "ok":
+        return entered
+    submitted = _parse_result(await computer_keyboard_press({"key": "enter", "modifiers": []}))
+    if submitted.get("status") != "ok":
+        return submitted
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        if destination.is_file():
+            return {"status": "ok", "action": "save_as", "path": str(destination),
+                    "verified": True, "method": "filesystem"}
+        await asyncio.sleep(0.2)
+    return {"status": "error", "code": "save_not_verified",
+            "message": "已提交保存，但目标文件未出现"}
 
 
 async def _execute(context: WindowContext, action: dict[str, Any]) -> dict[str, Any]:
@@ -547,10 +771,12 @@ async def _execute(context: WindowContext, action: dict[str, Any]) -> dict[str, 
         amount = int(action.get("amount", 3))
         direction = action.get("direction", "down" if amount >= 0 else "up")
         return _parse_result(await computer_mouse_scroll({"direction": direction, "lines": abs(amount)}))
-    if kind == "select_cell":
-        cell = str(action.get("cell", "")).strip().upper()
-        if not re.fullmatch(r"[A-Z]{1,3}[1-9][0-9]{0,6}", cell):
-            return {"status": "error", "code": "invalid_cell", "message": "cell 必须是 A1 或 A101 格式"}
+    if kind in ("select_cell", "select_range"):
+        target = str(action.get("cell") if kind == "select_cell" else action.get("range", "")).strip().upper()
+        pattern = r"[A-Z]{1,3}[1-9][0-9]{0,6}" if kind == "select_cell" else r"[A-Z]{1,3}[1-9][0-9]{0,6}:[A-Z]{1,3}[1-9][0-9]{0,6}"
+        if not re.fullmatch(pattern, target):
+            return {"status": "error", "code": "invalid_selection",
+                    "message": "cell 使用 A1 格式；range 使用 A1:A101 格式"}
         if not _activate_for_keyboard(context):
             return {"status": "error", "code": "focus_denied",
                     "message": "目标表格窗口不是前台窗口"}
@@ -558,14 +784,30 @@ async def _execute(context: WindowContext, action: dict[str, Any]) -> dict[str, 
         if opened.get("status") != "ok":
             return opened
         await asyncio.sleep(0.2)
-        typed = _parse_result(await computer_keyboard_type({"text": cell, "interval": 0.01}))
+        dialog_elements: list[dict[str, Any]] = []
+        try:
+            dialog_elements = observe(hex(context.hwnd), "interactive", MAX_ELEMENTS).get("elements", [])
+        except Exception:
+            pass
+        editor = next((item for item in dialog_elements
+                       if item.get("role") in ("Edit", "ComboBox") and item.get("focused")), None)
+        if editor:
+            typed = _parse_result(await uia_act({"ref": editor["ref"], "action": "set_value",
+                                                 "value": target, "verify": True}))
+        else:
+            typed = _parse_result(await computer_keyboard_type({"text": target, "interval": 0.01}))
         if typed.get("status") != "ok":
             return typed
         submitted = _parse_result(await computer_keyboard_press({"key": "enter", "modifiers": []}))
         if submitted.get("status") != "ok":
             return submitted
-        return {"status": "ok", "action": "select_cell", "cell": cell,
-                "method": "spreadsheet_go_to"}
+        if not await _verify_spreadsheet_selection(context, target):
+            return {"status": "error", "code": "selection_not_verified",
+                    "message": f"已执行定位，但无法确认当前选区为 {target}"}
+        return {"status": "ok", "action": kind, "cell" if kind == "select_cell" else "range": target,
+                "method": "spreadsheet_go_to", "selected": True}
+    if kind == "save_as":
+        return await _save_as(context, action)
     if kind == "type":
         target_ref = str(action.get("_target_ref") or context.focused_ref or "")
         if target_ref:
@@ -587,6 +829,12 @@ async def _execute(context: WindowContext, action: dict[str, Any]) -> dict[str, 
         key, modifiers = _press_parts(action.get("keys", []))
         if not key:
             return {"status": "error", "code": "missing_keys"}
+        invalid = _validate_shortcut(key, modifiers)
+        if invalid:
+            return {"status": "error", "code": "invalid_shortcut", "message": invalid}
+        if key.casefold() == "f5" and context.info().class_name in ("OpusApp", "XLMAIN"):
+            return {"status": "error", "code": "spreadsheet_f5_blocked",
+                    "message": "表格应用中禁止用 F5 猜测单元格位置；请使用 select_cell 或 select_range"}
         if not _activate_for_keyboard(context):
             return {"status": "error", "code": "focus_denied",
                     "message": "目标窗口不是前台窗口，已拒绝键盘注入"}
@@ -637,15 +885,18 @@ def _adopt_new_window(context: WindowContext, old_handles: set[int]) -> None:
     if foreground and foreground not in old_handles:
         try:
             info = get_window_info(foreground)
-            belongs = (context.app_path and info.process_path.casefold() == context.app_path.casefold())
-            belongs = belongs or (context.app_name and context.app_name.casefold() in info.title.casefold())
+            belongs = bool(context.app_path and info.process_path.casefold() == context.app_path.casefold())
+            belongs = belongs or bool(context.owner_pid and info.pid == context.owner_pid)
+            belongs = belongs or bool(context.app_name and context.app_name.casefold() == info.title.casefold())
             if belongs:
                 context.hwnd = foreground
                 return
         except (ValueError, OSError):
             pass
     if context.app_path:
-        candidates = [item for item in list_windows() if item.process_path.casefold() == context.app_path.casefold()]
+        candidates = [item for item in list_windows()
+                      if item.process_path.casefold() == context.app_path.casefold()
+                      or (context.owner_pid and item.pid == context.owner_pid)]
         if candidates:
             best = max(candidates, key=lambda item: (item.rect[2] - item.rect[0]) * (item.rect[3] - item.rect[1]))
             context.hwnd = best.hwnd
@@ -681,7 +932,8 @@ async def _wait_stable(context: WindowContext, timeout: float = 1.5) -> None:
         await asyncio.sleep(0.1)
 
 
-def _verify(context: WindowContext, expect: dict[str, Any], changed: bool) -> dict[str, Any]:
+def _verify(context: WindowContext, expect: dict[str, Any], changed: bool,
+            requires_change: bool = False) -> dict[str, Any]:
     info = context.info()
     if expect.get("window_title_contains"):
         wanted = str(expect["window_title_contains"]).casefold()
@@ -697,6 +949,8 @@ def _verify(context: WindowContext, expect: dict[str, Any], changed: bool) -> di
                 return {"verified": ocr_match is desired, "method": "ocr-text"}
             except Exception as exc:
                 return {"verified": False, "method": "ocr-text", "error": str(exc)[:200]}
+    if requires_change and not changed:
+        return {"verified": False, "method": "pixel-or-semantic-change", "changed": False}
     return {"verified": True, "method": "semantic-change" if changed else "action-result", "changed": changed}
 
 
@@ -708,9 +962,11 @@ def _verify(context: WindowContext, expect: dict[str, Any], changed: bool) -> di
         "actions": {"type": "array", "minItems": 1, "maxItems": 5, "items": {
             "type": "object",
             "properties": {
-                "type": {"type": "string", "description": "动作种类，不要使用 action 或 command 字段。", "enum": ["click_ref", "click_text", "click_point", "move", "hover", "double_click", "right_click", "middle_click", "drag", "scroll", "select_cell", "type", "press", "key_down", "key_up", "wait"]},
+                "type": {"type": "string", "description": "动作种类，不要使用 action 或 command 字段。", "enum": ["click_ref", "click_text", "click_point", "move", "hover", "double_click", "right_click", "middle_click", "drag", "scroll", "select_cell", "select_range", "save_as", "type", "press", "key_down", "key_up", "wait"]},
                 "ref": {"type": "string"}, "text": {"type": "string"},
                 "cell": {"type": "string", "description": "select_cell 使用的单元格地址，例如 A1、A101"},
+                "range": {"type": "string", "description": "select_range 使用的范围，例如 A1:A101"},
+                "path": {"type": "string", "description": "save_as 使用的目标绝对路径"},
                 "x": {"type": "integer"}, "y": {"type": "integer"},
                 "from_x": {"type": "integer"}, "from_y": {"type": "integer"},
                 "to_x": {"type": "integer"}, "to_y": {"type": "integer"},
@@ -745,7 +1001,7 @@ async def computer_action(args: dict) -> str:
         actions = [_normalize_action(action) for action in actions]
         supported = {"click_ref", "click_text", "click_point", "move", "hover", "double_click",
                      "right_click", "middle_click", "drag", "scroll", "type", "press", "key_down",
-                     "key_up", "select_cell", "wait"}
+                     "key_up", "select_cell", "select_range", "save_as", "wait"}
         if any(action.get("type") not in supported for action in actions):
             blocked = context.invalid_action()
             return parse_result({"status": "error", "code": "invalid_action_shape", "blocked": blocked,
@@ -758,9 +1014,7 @@ async def computer_action(args: dict) -> str:
         results = []
         before = context.state_hash
         memory_actions = []
-        needs_pixel_verification = any(action.get("type") in
-                                       ("click_point", "double_click", "right_click", "middle_click", "drag")
-                                       for action in actions)
+        needs_pixel_verification = any(_requires_observable_change(action) for action in actions)
         before_pixel = ""
         if needs_pixel_verification:
             try:
@@ -843,7 +1097,8 @@ async def computer_action(args: dict) -> str:
                 changed = changed or after_pixel != before_pixel
             except Exception:
                 pass
-        verification = _verify(context, args.get("expect", {}), changed)
+        verification = _verify(context, args.get("expect", {}), changed,
+                               requires_change=needs_pixel_verification)
         if not verification.get("verified"):
             level = context.fail()
             return parse_result({"status": "error", "code": "verification_failed", "results": results,

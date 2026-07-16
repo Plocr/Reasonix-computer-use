@@ -1,0 +1,4 @@
+interface:
+  display_name: "表格快捷操作"
+  short_description: "使用稳定快捷键完成 Excel 与 WPS 表格批量操作"
+  default_prompt: "使用 $spreadsheet-control 在 Excel 或 WPS 中定位、选择并批量编辑表格。"

@@ -630,6 +630,15 @@ def search_apps(query: str, limit: int = 10, refresh_on_miss: bool = True) -> li
     return selected
 
 
+def is_strong_app_match(query: str, item: dict[str, Any]) -> bool:
+    requested = query.strip().casefold()
+    needle = APP_ALIASES.get(requested, requested)
+    terms = {requested, needle, *SEARCH_SYNONYMS.get(needle, ())}
+    name = str(item.get("name", "")).casefold()
+    stem = Path(str(item.get("path") or "")).stem.casefold()
+    return name in terms or stem in terms or any(name == f"{term} app" for term in terms if term)
+
+
 def find_app(app_id: str) -> dict[str, Any] | None:
     index = ensure_index()
     item = next((candidate for candidate in index.get("applications", []) if candidate.get("id") == app_id), None)

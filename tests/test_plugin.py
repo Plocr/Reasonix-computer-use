@@ -36,6 +36,8 @@ def test_action_schema_exposes_canonical_type_and_coordinate_space():
     assert item["required"] == ["type"]
     assert "click_ref" in item["properties"]["type"]["enum"]
     assert "select_cell" in item["properties"]["type"]["enum"]
+    assert "select_range" in item["properties"]["type"]["enum"]
+    assert "save_as" in item["properties"]["type"]["enum"]
     assert "cell" in item["properties"]
     assert item["properties"]["coordinate_space"]["default"] == "window"
 
@@ -45,7 +47,7 @@ async def test_mcp_initialize_and_list_report_08():
     from reasonix_computer_use.mcp_server import handle_initialize, handle_tools_list
 
     initialized = await handle_initialize(1)
-    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.10"
+    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.11"
     listed = await handle_tools_list(2)
     assert {tool["name"] for tool in listed["result"]["tools"]} == PUBLIC_TOOLS
 
@@ -78,6 +80,19 @@ def test_window_revision_changes_only_with_state():
     assert context.revision != first
 
 
+def test_window_context_does_not_recover_by_partial_title(monkeypatch):
+    from reasonix_computer_use import runtime
+    from reasonix_computer_use.windows import WindowInfo
+
+    context = runtime.WindowContext("w1", 1, app_name="WPS", owner_pid=10)
+    edge = WindowInfo(2, "WPS - 搜索 - Microsoft Edge", "Chrome_WidgetWin_1",
+                      (0, 0, 800, 600), 20, r"C:\Edge\msedge.exe")
+    monkeypatch.setattr(runtime.user32, "IsWindow", lambda _hwnd: False)
+    monkeypatch.setattr(runtime, "list_windows", lambda: [edge])
+    with pytest.raises(ValueError):
+        context.info()
+
+
 def test_switching_perception_channel_does_not_create_fake_revision():
     from reasonix_computer_use.runtime import WindowContext
 
@@ -88,6 +103,15 @@ def test_switching_perception_channel_does_not_create_fake_revision():
     assert context.revision == revision
     assert context.update({"window": "A", "texts": ["button"]}, "ocr") is False
     assert context.update({"window": "A", "texts": ["new"]}, "ocr") is True
+
+
+def test_unchanged_action_is_not_written_to_memory(monkeypatch, tmp_path):
+    from reasonix_computer_use import runtime
+
+    monkeypatch.setattr(runtime, "memory_dir", lambda: tmp_path)
+    context = runtime.WindowContext("w1", 1, app_id="excel", app_name="Excel")
+    runtime.remember_success(context, {"type": "press", "keys": ["CTRL", "O"]}, "same", "same")
+    assert not list(tmp_path.rglob("*.json"))
 
 
 def test_two_same_state_failures_escalate_strategy():
@@ -342,6 +366,15 @@ def test_calculator_miss_queries_start_apps_before_full_refresh(tmp_path, monkey
     assert system_index.search_apps("Calculator")[0]["id"] == "calc"
 
 
+def test_strong_app_match_rejects_desktop_substring():
+    from reasonix_computer_use.system_index import is_strong_app_match
+
+    remote = {"name": "远程桌面连接", "path": "shell:AppsFolder\\RemoteDesktop"}
+    calculator = {"name": "计算器", "path": "shell:AppsFolder\\Calculator"}
+    assert is_strong_app_match("桌面", remote) is False
+    assert is_strong_app_match("Calculator", calculator) is True
+
+
 def test_start_apps_uses_utf8_for_localized_names(monkeypatch):
     from reasonix_computer_use import system_index
 
@@ -490,6 +523,28 @@ async def test_launch_treats_unknown_app_id_as_query(monkeypatch):
     result = json.loads(await domain_tools.computer_app({"operation": "launch", "app_id": "notepad"}))
     assert result["status"] == "ok"
     assert result["app"]["id"] == "real-id"
+
+
+@pytest.mark.asyncio
+async def test_open_file_returns_tracked_window(monkeypatch, tmp_path):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.runtime import WindowContext
+    from reasonix_computer_use.windows import WindowInfo
+
+    document = tmp_path / "data.xlsx"
+    document.write_bytes(b"xlsx")
+    info = WindowInfo(2, "data.xlsx - Excel", "XLMAIN", (0, 0, 800, 600), 22,
+                      r"C:\Office\EXCEL.EXE")
+    context = WindowContext("w1", 2, app_name="Excel", owner_pid=22)
+    monkeypatch.setattr(domain_tools, "list_windows", lambda: [info])
+    monkeypatch.setattr(domain_tools.os, "startfile", lambda _path: None)
+    monkeypatch.setattr(domain_tools.REGISTRY, "register", lambda *_a, **_k: context)
+    monkeypatch.setattr(domain_tools, "_prime_window_state", lambda *_a, **_k: None)
+    monkeypatch.setattr(domain_tools, "window_payload", lambda *_a, **_k: {"id": "w1"})
+    result = json.loads(await domain_tools.computer_app({"operation": "open_file",
+                                                          "path": str(document)}))
+    assert result["status"] == "ok"
+    assert result["window"]["id"] == "w1"
 
 
 @pytest.mark.asyncio
@@ -655,6 +710,26 @@ def test_press_accepts_combined_shortcut_shape():
     assert _press_parts(["ALT", "D"]) == ("D", ["ALT"])
 
 
+def test_press_rejects_misspelled_modifier():
+    from reasonix_computer_use.domain_tools import _validate_shortcut
+
+    assert "CRTL" in _validate_shortcut("O", ["CRTL"])
+
+
+@pytest.mark.asyncio
+async def test_keyboard_supports_punctuation_shortcut(monkeypatch):
+    from reasonix_computer_use import keyboard
+
+    sent = []
+    monkeypatch.setattr(keyboard, "_send_key",
+                        lambda vk_code, key_up=False: sent.append((vk_code, key_up)))
+    result = json.loads(await keyboard.computer_keyboard_press({"key": "+", "modifiers": ["ctrl"]}))
+    assert result["status"] == "ok"
+    assert "ctrl" in [value.casefold() for value in result["modifiers"]]
+    assert "shift" in [value.casefold() for value in result["modifiers"]]
+    assert sent
+
+
 @pytest.mark.asyncio
 async def test_select_cell_uses_spreadsheet_go_to(monkeypatch):
     from reasonix_computer_use import domain_tools
@@ -677,6 +752,11 @@ async def test_select_cell_uses_spreadsheet_go_to(monkeypatch):
     monkeypatch.setattr(domain_tools, "computer_keyboard_press", press)
     monkeypatch.setattr(domain_tools, "computer_keyboard_type", type_text)
     monkeypatch.setattr(domain_tools.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(domain_tools, "_office_selection_address", lambda: "")
+    observations = iter([{"elements": []}, {"elements": [
+        {"ref": "e1", "role": "DataItem", "name": "A101", "selected": True}
+    ]}])
+    monkeypatch.setattr(domain_tools, "observe", lambda *_a, **_k: next(observations))
     result = await domain_tools._execute(WindowContext("w1", 1),
                                          {"type": "select_cell", "cell": "a101"})
     assert result["status"] == "ok"
@@ -685,6 +765,173 @@ async def test_select_cell_uses_spreadsheet_go_to(monkeypatch):
     assert calls[1][0] == "type"
     assert calls[1][1]["text"] == "A101"
     assert calls[2] == ("press", {"key": "enter", "modifiers": []})
+
+
+@pytest.mark.asyncio
+async def test_select_range_uses_spreadsheet_go_to(monkeypatch):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.runtime import WindowContext
+
+    calls = []
+
+    async def press(args):
+        calls.append(("press", args))
+        return json.dumps({"status": "ok"})
+
+    async def type_text(args):
+        calls.append(("type", args))
+        return json.dumps({"status": "ok"})
+
+    async def no_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(domain_tools, "_activate_for_keyboard", lambda _context: True)
+    monkeypatch.setattr(domain_tools, "computer_keyboard_press", press)
+    monkeypatch.setattr(domain_tools, "computer_keyboard_type", type_text)
+    monkeypatch.setattr(domain_tools.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(domain_tools, "_office_selection_address", lambda: "")
+    observations = iter([{"elements": []}, {"elements": [
+        {"ref": "e1", "role": "ComboBox", "name": "名称框", "value": "A1:A101"}
+    ]}])
+    monkeypatch.setattr(domain_tools, "observe", lambda *_a, **_k: next(observations))
+    result = await domain_tools._execute(WindowContext("w1", 1),
+                                         {"type": "select_range", "range": "a1:a101"})
+    assert result["status"] == "ok"
+    assert result["range"] == "A1:A101"
+    assert result["selected"] is True
+    assert calls[1][1]["text"] == "A1:A101"
+
+
+@pytest.mark.asyncio
+async def test_select_cell_rejects_unverified_selection(monkeypatch):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.runtime import WindowContext
+
+    async def ok(_args):
+        return json.dumps({"status": "ok"})
+
+    async def no_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(domain_tools, "_activate_for_keyboard", lambda _context: True)
+    monkeypatch.setattr(domain_tools, "computer_keyboard_press", ok)
+    monkeypatch.setattr(domain_tools, "computer_keyboard_type", ok)
+    monkeypatch.setattr(domain_tools.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(domain_tools, "_office_selection_address", lambda: "")
+    monkeypatch.setattr(domain_tools, "observe", lambda *_a, **_k: {"elements": []})
+    result = await domain_tools._execute(WindowContext("w1", 1),
+                                         {"type": "select_cell", "cell": "A1"})
+    assert result["code"] == "selection_not_verified"
+
+
+@pytest.mark.asyncio
+async def test_save_as_requires_real_file_receipt(monkeypatch, tmp_path):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.runtime import WindowContext
+    from reasonix_computer_use.windows import WindowInfo
+
+    destination = tmp_path / "saved.xlsx"
+    context = WindowContext("w1", 1, app_name="Excel", owner_pid=10)
+    context.info = lambda: WindowInfo(1, "工作簿1 - Excel", "XLMAIN", (0, 0, 800, 600), 10,
+                                      r"C:\Office\EXCEL.EXE")
+    monkeypatch.setattr(domain_tools, "_activate_for_keyboard", lambda _context: True)
+    monkeypatch.setattr(domain_tools, "_active_office_application", lambda: None)
+    monkeypatch.setattr(domain_tools.user32, "GetForegroundWindow", lambda: 1)
+    monkeypatch.setattr(domain_tools, "get_window_info", lambda _hwnd: context.info())
+    monkeypatch.setattr(domain_tools, "observe", lambda *_a, **_k: {"elements": [
+        {"ref": "e1", "role": "ComboBox", "name": "文件名", "focused": True}
+    ]})
+
+    async def press(args):
+        if args["key"] == "enter":
+            destination.write_bytes(b"saved")
+        return json.dumps({"status": "ok"})
+
+    async def act(_args):
+        return json.dumps({"status": "ok", "verified": True})
+
+    async def no_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(domain_tools, "computer_keyboard_press", press)
+    monkeypatch.setattr(domain_tools, "uia_act", act)
+    monkeypatch.setattr(domain_tools.asyncio, "sleep", no_sleep)
+    result = await domain_tools._save_as(context, {"type": "save_as", "path": str(destination)})
+    assert result["status"] == "ok"
+    assert result["verified"] is True
+
+
+@pytest.mark.asyncio
+async def test_wps_f5_is_rejected(monkeypatch):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.runtime import WindowContext
+    from reasonix_computer_use.windows import WindowInfo
+
+    context = WindowContext("w1", 1)
+    context.info = lambda: WindowInfo(1, "数字表格.xlsx - WPS Office", "OpusApp", (0, 0, 800, 600))
+    result = await domain_tools._execute(context, {"type": "press", "keys": ["F5"]})
+    assert result["code"] == "spreadsheet_f5_blocked"
+
+
+def test_raw_pointer_action_requires_visible_change():
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.runtime import WindowContext
+    from reasonix_computer_use.windows import WindowInfo
+
+    context = WindowContext("w1", 1)
+    context.info = lambda: WindowInfo(1, "A", "Test", (0, 0, 100, 100))
+    result = domain_tools._verify(context, {}, False, requires_change=True)
+    assert result["verified"] is False
+
+
+def test_navigation_shortcuts_require_change_but_copy_does_not():
+    from reasonix_computer_use.domain_tools import _requires_observable_change
+
+    assert _requires_observable_change({"type": "press", "keys": ["CTRL", "O"]}) is True
+    assert _requires_observable_change({"type": "press", "keys": ["CTRL", "C"]}) is False
+    assert _requires_observable_change({"type": "click_ref", "ref": "e1"}) is True
+
+
+def test_find_app_window_does_not_match_partial_browser_title(monkeypatch):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.windows import WindowInfo
+
+    edge = WindowInfo(1, "WPS - 搜索 - Microsoft Edge", "Chrome_WidgetWin_1",
+                      (0, 0, 1000, 700), 10, r"C:\Edge\msedge.exe")
+    monkeypatch.setattr(domain_tools, "list_windows", lambda: [edge])
+    assert domain_tools._find_app_window(
+        {"name": "WPS", "path": r"C:\WPS\wps.exe"}, timeout=0.01) is None
+
+
+def test_find_app_window_ignores_minimized_placeholder(monkeypatch):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.windows import WindowInfo
+
+    hidden = WindowInfo(1, "WPS", "OpusApp", (-32000, -32000, -31840, -31972),
+                        10, r"C:\WPS\wps.exe")
+    monkeypatch.setattr(domain_tools, "list_windows", lambda: [hidden])
+    assert domain_tools._find_app_window(
+        {"name": "WPS", "path": r"C:\WPS\wps.exe"}, timeout=0.01) is None
+
+
+def test_spreadsheet_hint_only_recommends_explicit_range():
+    from reasonix_computer_use.domain_tools import _spreadsheet_hint
+    from reasonix_computer_use.windows import WindowInfo
+
+    info = WindowInfo(1, "数字表格.xlsx - WPS Office", "OpusApp", (0, 0, 800, 600))
+    generic = _spreadsheet_hint(info, "查看表格数据")
+    explicit = _spreadsheet_hint(info, "选择 A1:A101")
+    assert "recommended_action" not in generic
+    assert explicit["recommended_action"] == {"type": "select_range", "range": "A1:A101"}
+
+
+def test_excel_window_gets_spreadsheet_hint():
+    from reasonix_computer_use.domain_tools import _spreadsheet_hint
+    from reasonix_computer_use.windows import WindowInfo
+
+    info = WindowInfo(1, "工作簿1 - Excel", "XLMAIN", (0, 0, 800, 600))
+    hint = _spreadsheet_hint(info, "在 A1:A100 填入数据")
+    assert hint["recommended_action"] == {"type": "select_range", "range": "A1:A100"}
 
 
 @pytest.mark.asyncio
@@ -960,11 +1207,24 @@ async def test_file_write_requires_confirmation(tmp_path):
 def test_manifest_and_docs_reference_new_api():
     root = Path(__file__).resolve().parent.parent
     manifest = json.loads((root / "reasonix-plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.8.0-alpha.10"
+    assert manifest["version"] == "0.8.0-alpha.11"
     assert set(manifest["hooks"]) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"}
     routing = (root / "CLAUDE.md").read_text(encoding="utf-8")
     assert "chrome-devtools" in routing
     assert "computer_task_start" not in routing
+
+
+def test_spreadsheet_skill_is_packaged_and_concise():
+    root = Path(__file__).resolve().parent.parent
+    skill = root / "skills" / "spreadsheet-control"
+    text = (skill / "SKILL.md").read_text(encoding="utf-8")
+    reference = (skill / "references" / "shortcuts.md").read_text(encoding="utf-8")
+    metadata = (skill / "agents" / "openai.yaml").read_text(encoding="utf-8")
+    assert "select_cell" in text and "select_range" in text
+    assert "不得按 F5" in text
+    assert "support.office.com" in reference and "club.excelhome.net" in reference
+    assert "$spreadsheet-control" in metadata
+    assert len(text) < 5000
 
 
 def test_route_guard_blocks_shell_for_explicit_gui_workflow(monkeypatch, tmp_path):
@@ -1017,6 +1277,32 @@ def test_route_guard_launcher_emits_utf8_deny(tmp_path):
                              input=json.dumps(before).encode("utf-8"), capture_output=True,
                              env=env, timeout=10, check=True)
     assert json.loads(blocked.stdout.decode("utf-8"))["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_route_guard_without_session_id_uses_current_task(monkeypatch, tmp_path):
+    from hooks import route_guard
+
+    monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path)
+    route_guard.handle({"hook_event_name": "UserPromptSubmit",
+                        "prompt": "打开WPS表格并修改单元格后保存文件"})
+    result = route_guard.handle({"hook_event_name": "PreToolUse", "tool_name": "bash"})
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_route_guard_uses_thread_id_to_isolate_tasks(monkeypatch, tmp_path):
+    from hooks import route_guard
+
+    monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path)
+    route_guard.handle({"hook_event_name": "UserPromptSubmit", "thread_id": "gui",
+                        "prompt": "打开WPS并点击单元格"})
+    route_guard.handle({"hook_event_name": "UserPromptSubmit", "thread_id": "code",
+                        "prompt": "运行项目测试"})
+    blocked = route_guard.handle({"hook_event_name": "PreToolUse", "thread_id": "gui",
+                                  "tool_name": "bash"})
+    allowed = route_guard.handle({"hook_event_name": "PreToolUse", "thread_id": "code",
+                                  "tool_name": "bash"})
+    assert blocked["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert allowed is None
 
 
 def test_readme_documents_git_dependencies_and_windows_release():

@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -32,9 +33,16 @@ def _state_root() -> Path:
 
 def _session_key(payload: dict[str, Any]) -> str:
     value = (payload.get("session_id") or payload.get("sessionId")
-             or os.environ.get("REASONIX_SESSION_ID") or "")
+             or payload.get("thread_id") or payload.get("threadId")
+             or payload.get("conversation_id") or payload.get("conversationId")
+             or payload.get("task_id") or payload.get("taskId")
+             or payload.get("transcript_path") or payload.get("transcriptPath")
+             or os.environ.get("REASONIX_SESSION_ID") or os.environ.get("REASONIX_THREAD_ID") or "")
     if not value:
-        return ""
+        # Some Reasonix desktop builds do not include a session id in hook
+        # payloads. UserPromptSubmit still runs before PreToolUse, so a short-
+        # lived current-task key keeps routing effective across hook processes.
+        return "current-task"
     return hashlib.sha256(str(value).encode("utf-8", "replace")).hexdigest()[:24]
 
 
@@ -47,7 +55,11 @@ def _read_state(key: str) -> dict[str, Any]:
         return {}
     try:
         value = json.loads(_state_path(key).read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else {}
+        if not isinstance(value, dict):
+            return {}
+        if time.time() - float(value.get("updated_at", 0)) > 300:
+            return {}
+        return value
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
 
@@ -55,6 +67,7 @@ def _read_state(key: str) -> dict[str, Any]:
 def _write_state(key: str, state: dict[str, Any]) -> None:
     if not key:
         return
+    state = {**state, "updated_at": time.time()}
     path = _state_path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary = tempfile.mkstemp(prefix=".route-guard.", suffix=".tmp", dir=path.parent)
