@@ -28,3 +28,33 @@ jobs:
           if ($project -notmatch ('version\s*=\s*"' + [regex]::Escape($manifest.version) + '"')) {
             throw "pyproject.toml and reasonix-plugin.json versions differ"
           }
+
+  capability-app:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: macos-13
+            rid: osx-x64
+          - os: macos-14
+            rid: osx-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Restore capability app
+        run: dotnet restore capability_app/Reasonix.CapabilityApp.csproj
+      - name: Startup smoke
+        run: dotnet run --project capability_app/Reasonix.CapabilityApp.csproj -- --automation-smoke
+      - name: Publish self-contained capability app
+        run: dotnet publish capability_app/Reasonix.CapabilityApp.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishSingleFile=true -o capability-dist/${{ matrix.rid }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reasonix-capability-app-${{ matrix.rid }}
+          path: capability-dist/${{ matrix.rid }}/

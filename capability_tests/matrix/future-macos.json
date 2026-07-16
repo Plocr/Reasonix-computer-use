@@ -1,0 +1,10 @@
+{
+  "id": "future-macos",
+  "platform": "macos",
+  "language": "en-US",
+  "dpi": 144,
+  "display_count": 1,
+  "known_folders": {"desktop_redirected": false},
+  "app_types": ["bundle"],
+  "expected": ["build", "startup_smoke"]
+}

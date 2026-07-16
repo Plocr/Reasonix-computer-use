@@ -47,7 +47,7 @@ async def test_mcp_initialize_and_list_report_08():
     from reasonix_computer_use.mcp_server import handle_initialize, handle_tools_list
 
     initialized = await handle_initialize(1)
-    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.11"
+    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.12"
     listed = await handle_tools_list(2)
     assert {tool["name"] for tool in listed["result"]["tools"]} == PUBLIC_TOOLS
 
@@ -1207,7 +1207,8 @@ async def test_file_write_requires_confirmation(tmp_path):
 def test_manifest_and_docs_reference_new_api():
     root = Path(__file__).resolve().parent.parent
     manifest = json.loads((root / "reasonix-plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.8.0-alpha.11"
+    assert manifest["version"] == "0.8.0-alpha.12"
+    assert manifest["commands"] == ["commands"]
     assert set(manifest["hooks"]) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"}
     routing = (root / "CLAUDE.md").read_text(encoding="utf-8")
     assert "chrome-devtools" in routing
@@ -1238,7 +1239,7 @@ def test_route_guard_blocks_shell_for_explicit_gui_workflow(monkeypatch, tmp_pat
                                  "tool_name": "bash", "tool_input": {"command": "python task.py"}})
     output = result["hookSpecificOutput"]
     assert output["permissionDecision"] == "deny"
-    assert "computer_app" in output["permissionDecisionReason"]
+    assert "computer-use" in output["permissionDecisionReason"]
 
 
 def test_route_guard_allows_user_requested_python(monkeypatch, tmp_path):

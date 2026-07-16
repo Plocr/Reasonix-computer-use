@@ -1,0 +1,10 @@
+{
+  "id": "windows-zh-125",
+  "platform": "windows",
+  "language": "zh-CN",
+  "dpi": 120,
+  "display_count": 1,
+  "known_folders": {"desktop_redirected": true},
+  "app_types": ["exe", "uwp", "portable"],
+  "expected": ["uia", "ocr", "visual", "keyboard", "window_tracking"]
+}

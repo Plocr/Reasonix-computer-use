@@ -32,6 +32,7 @@ class WindowContext:
     app_path: str = ""
     app_fingerprint: str = ""
     owner_pid: int = 0
+    trace_id: str = ""
     revision_no: int = 0
     revision: str = "r0"
     state_hash: str = ""

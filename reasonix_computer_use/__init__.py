@@ -1,6 +1,6 @@
 """Reasonix Computer Use - Windows GUI automation plugin package."""
 
-__version__ = "0.8.0-alpha.11"
+__version__ = "0.8.0-alpha.12"
 
 from .environment_setup import activate_packages
 

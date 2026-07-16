@@ -1,0 +1,10 @@
+{
+  "id": "future-linux",
+  "platform": "linux",
+  "language": "en-US",
+  "dpi": 96,
+  "display_count": 1,
+  "known_folders": {"desktop_redirected": false},
+  "app_types": ["elf", "appimage"],
+  "expected": ["build", "startup_smoke"]
+}

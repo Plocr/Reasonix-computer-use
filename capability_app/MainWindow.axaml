@@ -1,0 +1,105 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Reasonix.CapabilityApp.MainWindow"
+        Title="Reasonix Capability Lab" Width="1040" Height="760"
+        MinWidth="820" MinHeight="600"
+        AutomationProperties.AutomationId="CapabilityMainWindow">
+  <DockPanel>
+    <Menu DockPanel.Dock="Top" AutomationProperties.AutomationId="MainMenu">
+      <MenuItem Header="File" AutomationProperties.AutomationId="FileMenu">
+        <MenuItem Header="Synthetic action" Click="MenuAction" AutomationProperties.AutomationId="MenuAction" />
+        <MenuItem Header="Duplicate" Click="DuplicateOne" AutomationProperties.AutomationId="DuplicateMenuOne" />
+        <MenuItem Header="Duplicate" Click="DuplicateTwo" AutomationProperties.AutomationId="DuplicateMenuTwo" />
+      </MenuItem>
+    </Menu>
+
+    <Border DockPanel.Dock="Bottom" Padding="12" BorderThickness="1,1,0,0">
+      <Grid ColumnDefinitions="Auto,*">
+        <TextBlock Text="Result" VerticalAlignment="Center" />
+        <TextBox x:Name="ResultPanel" Grid.Column="1" Margin="12,0,0,0" IsReadOnly="True"
+                 Text="SYNTHETIC_READY"
+                 AutomationProperties.AutomationId="ResultPanel" />
+      </Grid>
+    </Border>
+
+    <TabControl AutomationProperties.AutomationId="ScenarioTabs">
+      <TabItem Header="Basics" AutomationProperties.AutomationId="BasicsTab">
+        <ScrollViewer>
+          <StackPanel Margin="20" Spacing="12" MaxWidth="720" HorizontalAlignment="Left">
+            <TextBox x:Name="InputText" Watermark="Synthetic input"
+                     AutomationProperties.AutomationId="InputText" />
+            <Button Content="Apply" Click="ApplyInput" AutomationProperties.AutomationId="ApplyButton" />
+            <CheckBox x:Name="ToggleCheck" Content="Enabled option" Click="CheckChanged"
+                      AutomationProperties.AutomationId="ToggleCheck" />
+            <StackPanel Orientation="Horizontal" Spacing="16">
+              <RadioButton GroupName="Mode" Content="Mode A" IsChecked="True"
+                           Click="RadioChanged" AutomationProperties.AutomationId="ModeA" />
+              <RadioButton GroupName="Mode" Content="Mode B"
+                           Click="RadioChanged" AutomationProperties.AutomationId="ModeB" />
+            </StackPanel>
+            <ComboBox x:Name="ChoiceCombo" SelectedIndex="0" SelectionChanged="ChoiceChanged"
+                      AutomationProperties.AutomationId="ChoiceCombo">
+              <ComboBoxItem Content="Alpha" />
+              <ComboBoxItem Content="Beta" />
+              <ComboBoxItem Content="Gamma" />
+            </ComboBox>
+            <Button Content="Duplicate" Click="DuplicateOne" AutomationProperties.AutomationId="DuplicateButtonOne" />
+            <Button Content="Duplicate" Click="DuplicateTwo" AutomationProperties.AutomationId="DuplicateButtonTwo" />
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Grid" AutomationProperties.AutomationId="GridTab">
+        <Grid Margin="16" RowDefinitions="*,Auto">
+          <DataGrid x:Name="CapabilityGrid" AutoGenerateColumns="True" SelectionMode="Extended"
+                    IsReadOnly="False"
+                    AutomationProperties.AutomationId="CapabilityGrid" />
+          <Button Grid.Row="1" Margin="0,10,0,0" Content="Read selection" Click="ReadGridSelection"
+                  AutomationProperties.AutomationId="ReadGridSelection" />
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Windows" AutomationProperties.AutomationId="WindowsTab">
+        <StackPanel Margin="20" Spacing="12">
+          <Button Content="Open modal" Click="OpenModal" AutomationProperties.AutomationId="OpenModal" />
+          <Button Content="Open child" Click="OpenChild" AutomationProperties.AutomationId="OpenChild" />
+          <Button Content="Replace window" Click="ReplaceWindow" AutomationProperties.AutomationId="ReplaceWindow" />
+          <Button Content="Minimize" Click="MinimizeWindow" AutomationProperties.AutomationId="MinimizeWindow" />
+        </StackPanel>
+      </TabItem>
+
+      <TabItem Header="Canvas" AutomationProperties.AutomationId="CanvasTab">
+        <Canvas x:Name="TestCanvas" Margin="16" Background="#202428" Height="500"
+                PointerWheelChanged="CanvasWheel" AutomationProperties.AutomationId="TestCanvas">
+          <Border x:Name="DragTarget" Width="90" Height="90" Background="#37A169"
+                  Canvas.Left="80" Canvas.Top="80" CornerRadius="4"
+                  PointerPressed="DragPressed" PointerMoved="DragMoved" PointerReleased="DragReleased"
+                  AutomationProperties.AutomationId="DragTarget">
+            <TextBlock Text="◆" FontSize="32" HorizontalAlignment="Center" VerticalAlignment="Center" />
+          </Border>
+          <Button Content="★" Canvas.Left="260" Canvas.Top="90" Click="CanvasIcon"
+                  AutomationProperties.Name="Favorite action" AutomationProperties.AutomationId="CanvasIcon" />
+        </Canvas>
+      </TabItem>
+
+      <TabItem Header="Failures" AutomationProperties.AutomationId="FailuresTab">
+        <StackPanel Margin="20" Spacing="12">
+          <Button Content="Delayed result" Click="DelayedResult" AutomationProperties.AutomationId="DelayedResult" />
+          <Button Content="No change" Click="NoChange" AutomationProperties.AutomationId="NoChange" />
+          <Button Content="Error dialog" Click="ErrorDialog" AutomationProperties.AutomationId="ErrorDialog" />
+          <Button Content="Disabled" IsEnabled="False" AutomationProperties.AutomationId="DisabledButton" />
+          <ProgressBar x:Name="LoadingBar" IsIndeterminate="False" Minimum="0" Maximum="100"
+                       AutomationProperties.AutomationId="LoadingBar" />
+        </StackPanel>
+      </TabItem>
+
+      <TabItem Header="Focus" AutomationProperties.AutomationId="FocusTab">
+        <StackPanel Margin="20" Spacing="12">
+          <TextBox x:Name="ReplaceInput" Text="replace me" AutomationProperties.AutomationId="ReplaceInput" />
+          <TextBox x:Name="AppendInput" Text="append:" AutomationProperties.AutomationId="AppendInput" />
+          <Button Content="Report focus" Click="ReportFocus" AutomationProperties.AutomationId="ReportFocus" />
+        </StackPanel>
+      </TabItem>
+    </TabControl>
+  </DockPanel>
+</Window>

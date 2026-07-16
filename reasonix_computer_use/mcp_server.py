@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 from . import __version__
+from .trace import finish_trace, record_event, start_trace
 
 # Reasonix speaks UTF-8 over stdio. Windows may otherwise inherit a GBK
 # console encoding and crash the server when a tool returns CJK or symbols.
@@ -120,6 +121,44 @@ async def handle_tools_call(request_id: Any, params: dict[str, Any]) -> dict[str
         started = time.perf_counter()
         result = await tool["handler"](arguments)
         elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+        try:
+            parsed_result = json.loads(result)
+            from .runtime import REGISTRY
+            context = None
+            window_id = str(arguments.get("window_id") or parsed_result.get("window", {}).get("id") or "")
+            if window_id:
+                try:
+                    context = REGISTRY.get(window_id)
+                except KeyError:
+                    context = None
+            if context is not None and not context.trace_id:
+                context.trace_id = start_trace("computer-task", metadata={
+                    "tool": tool_name, "operation": arguments.get("operation", "")})
+            if context is not None and context.trace_id:
+                event = {"computer_app": "window_revision", "computer_state": "perception",
+                         "computer_action": "action", "computer_system": "environment"}.get(tool_name, "verification")
+                trace_data: dict[str, Any] = {
+                    "window_id": context.window_id,
+                    "revision": parsed_result.get("revision") or parsed_result.get("window", {}).get("revision", ""),
+                    "status": parsed_result.get("status"),
+                    "elapsed_ms": elapsed_ms,
+                }
+                if tool_name == "computer_state":
+                    trace_data.update({"source": parsed_result.get("source"),
+                                       "blocked": bool(parsed_result.get("blocked")),
+                                       "progress": bool(parsed_result.get("progress")),
+                                       "element_count": len(parsed_result.get("elements", []))})
+                elif tool_name == "computer_action":
+                    trace_data.update({"actions": arguments.get("actions", []),
+                                       "verification": parsed_result.get("verification", {}),
+                                       "blocked": bool(parsed_result.get("blocked"))})
+                else:
+                    trace_data["operation"] = arguments.get("operation", "")
+                record_event(context.trace_id, event, trace_data)
+                if tool_name == "computer_app" and arguments.get("operation") == "close":
+                    finish_trace(context.trace_id, "completed" if parsed_result.get("status") == "ok" else "failed")
+        except (json.JSONDecodeError, OSError, ValueError, TypeError):
+            pass
         content = [{"type": "text", "text": result}]
         if tool_name == "computer_state":
             try:

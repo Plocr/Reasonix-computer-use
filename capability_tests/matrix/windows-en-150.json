@@ -1,0 +1,10 @@
+{
+  "id": "windows-en-150",
+  "platform": "windows",
+  "language": "en-US",
+  "dpi": 144,
+  "display_count": 2,
+  "known_folders": {"desktop_redirected": true},
+  "app_types": ["exe", "msix"],
+  "expected": ["uia", "ocr", "visual", "negative_coordinates"]
+}

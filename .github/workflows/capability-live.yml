@@ -1,0 +1,24 @@
+name: capability-live-windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  live:
+    runs-on: [self-hosted, Windows, X64, reasonix-gui]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - run: python -m pip install -e ".[dev]"
+      - run: dotnet publish capability_app/Reasonix.CapabilityApp.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o capability-dist/win-x64
+      - name: Run full synthetic suite
+        run: python -m reasonix_computer_use.capability_runner full --app capability-dist/win-x64/Reasonix.CapabilityApp.exe --output capability-reports/live.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: capability-live-report
+          path: capability-reports/live.json

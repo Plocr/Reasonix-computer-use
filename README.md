@@ -1,4 +1,4 @@
-# Reasonix Computer Use 0.8.0-alpha.11
+# Reasonix Computer Use 0.8.0-alpha.12
 
 Reasonix 专用的 Windows Computer Use 插件。任务完成优先，低 token 为优化目标。
 
@@ -258,6 +258,18 @@ dist/reasonix-computer-use-<版本>-windows-x64-setup.exe.sha256
 `v<版本>` 标签时，GitHub Actions 会构建并发布这些文件；也可以在
 Actions 页面手动构建但不创建 Release。
 
+## Alpha.12 能力测试
+
+本版冻结 `computer_app`、`computer_state`、`computer_action` 和 `computer_system` 四个 MCP 工具，新增通用能力测试体系，不保存真实应用的专属坐标。
+
+- Hook 分为 `strict_gui`、`gui_preferred` 和 `result_only`。普通 GUI 任务只有达到失败阈值后才允许安全降级，已完成的任务不会为了凑调用次数继续操作。
+- 脱敏 trace 默认写入 `memory/traces/`，不保存截图、输入正文、剪贴板、凭据或完整用户路径，最多保留 50 条。
+- `quick`、`full`、`replay`、`benchmark` 和 `matrix` runner 分别覆盖静态契约、在线合成 GUI、离线轨迹、评分和环境矩阵。
+- Avalonia/.NET 8 测试应用提供稳定 AutomationId；Windows 执行真实 UIA 契约，macOS/Linux 在 Alpha.12 仅构建和启动冒烟。
+- Reasonix 13 映射四个手动命令：`/computer-use:doctor`、`/computer-use:test`、`/computer-use:trace` 和 `/computer-use:benchmark`。自然语言任务仍自动路由。
+
+完整命令和发布门禁见 [能力测试说明](docs/CAPABILITY_TESTING.zh-CN.md)。
+
 ## 诊断
 
 安装后可让 Reasonix 调用：
@@ -275,7 +287,7 @@ python -m pytest -q
 python -m reasonix_computer_use.session_start
 ```
 
-Alpha.11 当前包含 86 项自动测试，覆盖动作 schema、物理坐标、revision、首次依赖安装、
+Alpha.12 当前包含 96 项自动测试，覆盖动作 schema、物理坐标、revision、首次依赖安装、
 UIA/OCR/视觉回退、Unicode 输入、WebView ComboBox、剪贴板恢复、熔断和
 Shell 逃逸阻断。
 
@@ -292,5 +304,5 @@ Shell 逃逸阻断。
 
 ## 当前范围
 
-0.8.0-alpha.11 只支持 Windows 10/11 x64。本次仅更新 Git 源码，未构建新的安装器；macOS 和 Linux 将在 Windows 版本稳定
+0.8.0-alpha.12 只支持 Windows 10/11 x64。本次仅更新 Git 源码，未构建新的安装器；macOS 和 Linux 将在 Windows 版本稳定
 后适配；跨应用长链自治、主动巡检、语音无障碍和自动探索软件菜单不在本版本范围内。

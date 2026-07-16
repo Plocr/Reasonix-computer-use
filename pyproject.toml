@@ -1,6 +1,6 @@
 [project]
 name = "reasonix-computer-use"
-version = "0.8.0-alpha.11"
+version = "0.8.0-alpha.12"
 description = "Reasonix-native Windows computer use with UIA, local OCR and visual fallback"
 requires-python = ">=3.10"
 dependencies = [
@@ -21,3 +21,4 @@ build-backend = "hatchling.build"
 
 [project.scripts]
 reasonix-computer-use = "reasonix_computer_use.mcp_server:main"
+reasonix-computer-capabilities = "reasonix_computer_use.capability_runner:main"

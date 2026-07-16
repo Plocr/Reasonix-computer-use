@@ -35,4 +35,9 @@ memory/applist.md
 memory/swlist.md
 memory/apps/
 memory/screenshots/
+memory/traces/
 memory/operation-log.md
+.tools/
+capability-reports/
+capability_app/bin/
+capability_app/obj/

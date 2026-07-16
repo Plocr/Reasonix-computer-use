@@ -21,6 +21,10 @@ PROCESS_MARKERS = (
     "使用计算器", "使用计算器应用", "使用应用", "逐个相加", "点击", "单元格", "打开",
     "启动", "退出", "播放", "登录", "切换主题", "保存文件",
 )
+STRICT_GUI_MARKERS = (
+    "必须使用", "必须用", "只能使用", "只能用", "不要脚本", "禁止脚本", "不要python",
+    "不许用python", "逐个点击", "逐一点击", "一个个点击", "点击计算", "亲自点击",
+)
 USER_CLI_MARKERS = ("用python", "使用python", "python脚本", "用脚本", "命令行", "powershell", "bash", " cli")
 SHELL_TOOLS = {"bash", "shell", "powershell", "terminal", "computer"}
 COMPUTER_TOOLS = {"computer_app", "computer_state", "computer_action", "computer_system"}
@@ -88,12 +92,17 @@ def classify_prompt(prompt: str) -> dict[str, Any]:
     user_requested_cli = any(marker in compact for marker in USER_CLI_MARKERS)
     desktop_task = marker_count >= 2 or any(marker in compact for marker in ("单元格", "计算器应用", "桌面新建"))
     process_required = desktop_task and any(marker in compact for marker in PROCESS_MARKERS)
+    strict_gui = process_required and any(marker in compact for marker in STRICT_GUI_MARKERS)
+    mode = "result_only" if user_requested_cli or not desktop_task else ("strict_gui" if strict_gui else "gui_preferred")
     return {
+        "mode": mode,
         "desktop_task": desktop_task,
         "process_required": process_required,
         "user_requested_cli": user_requested_cli,
         "computer_attempts": 0,
         "computer_failures": 0,
+        "blocked_seen": False,
+        "fallback_authorized": mode == "result_only",
     }
 
 
@@ -113,6 +122,24 @@ def _tool_failed(payload: dict[str, Any]) -> bool:
     return False
 
 
+def _tool_blocked(payload: dict[str, Any]) -> bool:
+    result = payload.get("tool_result", payload.get("toolResult", {}))
+    if isinstance(result, str):
+        return '"blocked":true' in result.casefold()
+    return bool(result.get("blocked")) if isinstance(result, dict) else False
+
+
+def _fallback_ready(state: dict[str, Any]) -> bool:
+    if state.get("mode") == "result_only":
+        return True
+    if state.get("mode") == "strict_gui":
+        return False
+    return bool(state.get("blocked_seen")) or (
+        int(state.get("computer_attempts", 0)) >= 3
+        and int(state.get("computer_failures", 0)) >= 2
+    )
+
+
 def handle(payload: dict[str, Any]) -> dict[str, Any] | None:
     event = str(payload.get("hook_event_name") or payload.get("event") or "")
     key = _session_key(payload)
@@ -122,10 +149,18 @@ def handle(payload: dict[str, Any]) -> dict[str, Any] | None:
     if event == "UserPromptSubmit":
         prompt = str(payload.get("prompt") or payload.get("user_prompt") or "")
         state = classify_prompt(prompt)
+        try:
+            from reasonix_computer_use.trace import start_trace
+            state["trace_id"] = start_trace("hook-policy", metadata={"mode": state["mode"]})
+        except Exception:
+            state["trace_id"] = ""
         _write_state(key, state)
-        if state["process_required"] and not state["user_requested_cli"]:
+        if state["mode"] == "strict_gui":
             return {"hookSpecificOutput": {"hookEventName": event, "additionalContext":
-                    "本任务明确指定桌面应用/GUI过程。先调用computer_app，不得用Bash、Python、公式或CLI替代指定步骤；可在目标应用内批量键入以减少动作。"}}
+                    "本任务明确约束GUI执行过程，必须先使用computer-use；失败后请求用户介入，不得用Bash、Python、公式或CLI替代指定步骤。"}}
+        if state["mode"] == "gui_preferred":
+            return {"hookSpecificOutput": {"hookEventName": event, "additionalContext":
+                    "本任务优先使用computer-use；任务成功后立即停止。仅在尚未完成且累计至少3次Computer Use调用并有2次真实失败，或工具返回blocked=true后，才允许安全降级；降级时必须如实说明实际方法。"}}
         return None
     state = _read_state(key)
     tool = _tool_name(payload)
@@ -133,17 +168,48 @@ def handle(payload: dict[str, Any]) -> dict[str, Any] | None:
         state["computer_attempts"] = int(state.get("computer_attempts", 0)) + 1
         if _tool_failed(payload):
             state["computer_failures"] = int(state.get("computer_failures", 0)) + 1
+        if _tool_blocked(payload):
+            state["blocked_seen"] = True
+        state["fallback_authorized"] = _fallback_ready(state)
+        if state.get("trace_id"):
+            try:
+                from reasonix_computer_use.trace import record_event
+                record_event(state["trace_id"], "strategy_transition", {
+                    "mode": state.get("mode"), "computer_attempts": state.get("computer_attempts"),
+                    "computer_failures": state.get("computer_failures"),
+                    "blocked": state.get("blocked_seen"),
+                    "fallback_authorized": state.get("fallback_authorized")})
+            except Exception:
+                pass
         _write_state(key, state)
         return None
     if event == "PreToolUse" and tool in SHELL_TOOLS:
-        if state.get("desktop_task") and state.get("process_required") and not state.get("user_requested_cli"):
+        if state.get("mode") == "strict_gui":
             return {"hookSpecificOutput": {
                 "hookEventName": event,
                 "permissionDecision": "deny",
                 "permissionDecisionReason":
-                    "用户明确要求桌面应用或GUI过程；Shell/Python不能替代。请从computer_app开始或继续computer_state/computer_action。",
+                    "用户明确约束GUI执行过程；Shell/Python不能替代。请继续computer-use或请求用户介入。",
                 "additionalContext":
                     "不要计算或生成最终文件来冒充GUI步骤。应用不可用时先搜索StartApps/同类应用，仍失败再向用户说明。",
+            }}
+        if state.get("mode") == "gui_preferred" and not _fallback_ready(state):
+            return {"hookSpecificOutput": {
+                "hookEventName": event,
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "本任务应优先使用computer-use；尚未达到安全降级阈值。",
+                "additionalContext": "至少3次Computer Use调用且2次真实失败，或blocked=true后才允许降级。",
+            }}
+        if state.get("mode") == "gui_preferred" and _fallback_ready(state):
+            if state.get("trace_id"):
+                try:
+                    from reasonix_computer_use.trace import record_event
+                    record_event(state["trace_id"], "fallback", {"authorized": True, "mode": "gui_preferred"})
+                except Exception:
+                    pass
+            return {"hookSpecificOutput": {
+                "hookEventName": event,
+                "additionalContext": "已达到安全降级阈值。只允许等价且可逆的CLI/API方案；必须说明GUI失败点和实际方法，不得声称完成未执行的GUI步骤；外部写入和不可逆操作仍需确认。",
             }}
     return None
 

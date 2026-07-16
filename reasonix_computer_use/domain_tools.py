@@ -28,6 +28,7 @@ from .screenshot import _capture_window, _get_screenshot_dir
 from .system_index import (build_index, enrich_index, ensure_index, find_app, is_strong_app_match,
                            query_profile, search_apps)
 from .text_vision import find_text, scan_text
+from .trace import export_trace, list_traces, trace_dir
 from .ui_tree import computer_act as uia_act
 from .ui_tree import observe
 from .utils import parse_result, tool_error
@@ -1186,7 +1187,7 @@ def _window_operation(target: str, params: dict[str, Any]) -> dict[str, Any]:
     name="computer_system",
     description="查询环境、首次安装依赖、执行诊断、受控文件操作和窗口管理。setup 后用 setup_status 获取精简进度；command 仅允许单条只读诊断。",
     schema={"type": "object", "properties": {
-        "operation": {"type": "string", "enum": ["profile", "refresh", "diagnose", "setup", "setup_status", "file", "window", "command"]},
+        "operation": {"type": "string", "enum": ["profile", "refresh", "diagnose", "setup", "setup_status", "trace", "file", "window", "command"]},
         "target": {"type": "string"}, "params": {"type": "object"}}, "required": ["operation"]})
 async def computer_system(args: dict) -> str:
     operation = args.get("operation")
@@ -1217,6 +1218,29 @@ async def computer_system(args: dict) -> str:
         if operation == "setup_status":
             wait_seconds = max(0.0, min(float(params.get("wait_seconds", 0)), 30.0))
             return parse_result(wait_environment_status(wait_seconds))
+        if operation == "trace":
+            action = str(params.get("action", "status")).casefold()
+            if action == "status":
+                traces = list_traces(50)
+                return _ok(enabled=True, schema_version=1, retained=len(traces), limit=50,
+                           screenshots=False, directory=str(trace_dir()))
+            if action == "list":
+                return _ok(traces=list_traces(int(params.get("limit", 20))))
+            if action == "export":
+                if not params.get("confirmed"):
+                    return tool_error("confirmation_required", "导出脱敏 trace 需要 confirmed=true")
+                trace_id = str(params.get("trace_id", ""))
+                destination = str(params.get("destination", ""))
+                if not trace_id or not destination:
+                    return tool_error("missing_trace_export", "export 必须提供 trace_id 和 destination")
+                try:
+                    exported = export_trace(trace_id, destination)
+                except FileNotFoundError:
+                    return tool_error("trace_not_found", f"没有找到 trace：{trace_id}")
+                except ValueError as exc:
+                    return tool_error("invalid_trace_destination", str(exc))
+                return _ok(trace_id=trace_id, exported=exported, redacted=True)
+            return tool_error("invalid_trace_action", "trace action 必须是 status、list 或 export")
         if operation == "file":
             return _ok(result=_file_operation(target, params))
         if operation == "window":
