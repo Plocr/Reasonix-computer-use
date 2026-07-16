@@ -174,6 +174,8 @@ async def handle_tools_call(request_id: Any, params: dict[str, Any]) -> dict[str
                 record_event(context.trace_id, event, trace_data)
                 if tool_name == "computer_app" and arguments.get("operation") == "close":
                     finish_trace(context.trace_id, "completed" if parsed_result.get("status") == "ok" else "failed")
+            if context is not None:
+                REGISTRY.persist(context)
         except (json.JSONDecodeError, OSError, ValueError, TypeError):
             pass
         content = [{"type": "text", "text": result}]

@@ -18,11 +18,44 @@ from .windows import WindowInfo, get_window_info, list_windows, user32, window_d
 
 
 STRATEGIES = ("memory", "uia", "ocr", "visual")
+RUNTIME_STATE_TTL_SECONDS = 300
+RUNTIME_ELEMENT_KEYS = (
+    "ref", "role", "name", "rect", "actions", "id", "automation_id", "class", "class_name",
+    "confidence", "action", "focused", "selected", "coordinate_space",
+)
 
 
 def _hash(value: Any) -> str:
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha1(encoded).hexdigest()[:12]
+
+
+def _runtime_state_dir() -> Path:
+    configured = os.environ.get("REASONIX_RUNTIME_STATE_DIR")
+    if configured:
+        return Path(configured)
+    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    return Path(base) / "Reasonix" / "computer-use" / "window-state"
+
+
+def _runtime_state_path(window_id: str) -> Path:
+    return _runtime_state_dir() / f"{hashlib.sha256(window_id.encode('utf-8')).hexdigest()[:24]}.json"
+
+
+def _runtime_identity(info: WindowInfo) -> str:
+    return _hash({"hwnd": info.hwnd, "pid": info.pid, "class": info.class_name,
+                  "path": info.process_path.casefold()})
+
+
+def _safe_runtime_elements(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    safe = []
+    for element in elements[:80]:
+        item = {key: element.get(key) for key in RUNTIME_ELEMENT_KEYS
+                if element.get(key) not in (None, "", [])}
+        if "name" in item:
+            item["name"] = str(item["name"])[:160]
+        safe.append(item)
+    return safe
 
 
 @dataclass
@@ -41,6 +74,7 @@ class WindowContext:
     source_hashes: dict[str, str] = field(default_factory=dict)
     source: str = "none"
     elements: list[dict[str, Any]] = field(default_factory=list)
+    references: dict[str, dict[str, Any]] = field(default_factory=dict)
     image_hash: str = ""
     visual_sent_for_revision: str = ""
     failure_hash: str = ""
@@ -52,6 +86,7 @@ class WindowContext:
     hard_blocked: bool = False
     state_reads_without_action: int = 0
     focused_ref: str = ""
+    restored: bool = False
 
     def info(self) -> WindowInfo:
         if user32.IsWindow(self.hwnd):
@@ -78,6 +113,7 @@ class WindowContext:
         raise ValueError("目标窗口已经关闭，且没有找到该应用的新窗口")
 
     def update(self, state: Any, source: str, elements: list[dict[str, Any]] | None = None) -> bool:
+        self.restored = False
         digest = _hash(state)
         previous = self.source_hashes.get(source)
         changed = (not self.state_hash) or (previous is not None and digest != previous)
@@ -95,9 +131,14 @@ class WindowContext:
             self.hard_blocked = False
             self.state_reads_without_action = 0
             self.focused_ref = ""
+            self.references.clear()
         self.source = source
         if elements is not None:
             self.elements = elements
+            for element in elements:
+                ref = str(element.get("ref", ""))
+                if ref:
+                    self.references[ref] = element
         return changed
 
     def fail(self) -> int:
@@ -133,11 +174,101 @@ class WindowContext:
             self.hard_blocked = True
         return self.hard_blocked
 
+    def begin_task(self) -> None:
+        self.failure_hash = ""
+        self.failure_count = 0
+        self.strategy_level = 1
+        self.action_signatures.clear()
+        self.invalid_action_count = 0
+        self.no_progress_count = 0
+        self.hard_blocked = False
+        self.state_reads_without_action = 0
+        self.focused_ref = ""
+
 
 class WindowRegistry:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._contexts: dict[str, WindowContext] = {}
+
+    @staticmethod
+    def persist(context: WindowContext) -> None:
+        """Persist only short-lived perception metadata across stdio restarts."""
+        if not context.window_id.startswith("w-"):
+            return
+        try:
+            info = context.info()
+            path = _runtime_state_path(context.window_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "version": 1,
+                "updated_at": time.time(),
+                "identity": _runtime_identity(info),
+                "revision_no": context.revision_no,
+                "revision": context.revision,
+                "state_hash": context.state_hash,
+                "source_hashes": context.source_hashes,
+                "source": context.source,
+                "elements": _safe_runtime_elements(context.elements),
+                "references": _safe_runtime_elements(list(context.references.values())),
+                "image_hash": context.image_hash,
+                "failure_hash": context.failure_hash,
+                "failure_count": context.failure_count,
+                "strategy_level": context.strategy_level,
+                "action_signatures": sorted(context.action_signatures),
+                "invalid_action_count": context.invalid_action_count,
+                "no_progress_count": context.no_progress_count,
+                "hard_blocked": context.hard_blocked,
+                "state_reads_without_action": context.state_reads_without_action,
+            }
+            handle, temporary = tempfile.mkstemp(prefix=".window-state.", suffix=".tmp", dir=path.parent)
+            try:
+                with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
+                    json.dump(payload, stream, ensure_ascii=False, separators=(",", ":"))
+                os.replace(temporary, path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+        except (OSError, TypeError, ValueError):
+            pass
+
+    @staticmethod
+    def _restore(context: WindowContext, info: WindowInfo) -> None:
+        path = _runtime_state_path(context.window_id)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if (not isinstance(payload, dict)
+                    or time.time() - float(payload.get("updated_at", 0)) > RUNTIME_STATE_TTL_SECONDS
+                    or payload.get("identity") != _runtime_identity(info)
+                    or payload.get("source") not in ("uia", "ocr", "memory", "visual")):
+                return
+            elements = payload.get("elements", [])
+            if not isinstance(elements, list):
+                return
+            context.revision_no = max(1, int(payload.get("revision_no", 1)))
+            context.revision = str(payload.get("revision") or context.revision)
+            context.state_hash = str(payload.get("state_hash") or context.state_hash)
+            hashes = payload.get("source_hashes", {})
+            context.source_hashes = hashes if isinstance(hashes, dict) else {}
+            context.source = str(payload.get("source"))
+            context.elements = _safe_runtime_elements([item for item in elements if isinstance(item, dict)])
+            context.image_hash = str(payload.get("image_hash", ""))
+            context.failure_hash = str(payload.get("failure_hash", ""))
+            context.failure_count = max(0, int(payload.get("failure_count", 0)))
+            context.strategy_level = max(1, min(int(payload.get("strategy_level", 1)), len(STRATEGIES) - 1))
+            signatures = payload.get("action_signatures", [])
+            context.action_signatures = {str(item) for item in signatures[:100]} if isinstance(signatures, list) else set()
+            context.invalid_action_count = max(0, int(payload.get("invalid_action_count", 0)))
+            context.no_progress_count = max(0, int(payload.get("no_progress_count", 0)))
+            context.hard_blocked = bool(payload.get("hard_blocked"))
+            context.state_reads_without_action = max(0, int(payload.get("state_reads_without_action", 0)))
+            references = payload.get("references", context.elements)
+            if isinstance(references, list):
+                context.references = {str(item.get("ref")): item for item in _safe_runtime_elements(
+                    [item for item in references if isinstance(item, dict)]) if item.get("ref")}
+            context.restored = True
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            return
 
     def register(self, info: WindowInfo, app: dict[str, Any] | None = None) -> WindowContext:
         with self._lock:
@@ -168,6 +299,7 @@ class WindowRegistry:
                 owner_pid=info.pid,
             )
             context.update(_window_state(info), "window")
+            self._restore(context, info)
             self._contexts[window_id] = context
             return context
 

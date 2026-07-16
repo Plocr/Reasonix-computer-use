@@ -60,11 +60,16 @@ def scan_text(window_id: str, max_results: int = 100) -> dict:
     for box, recognized, confidence in result or []:
         xs = [point[0] for point in box]
         ys = [point[1] for point in box]
-        rect = [int(info.rect[0] + min(xs)), int(info.rect[1] + min(ys)),
-                int(info.rect[0] + max(xs)), int(info.rect[1] + max(ys))]
+        # OCR runs on the cropped window bitmap, so keep its public rectangles
+        # in window-local physical pixels. This matches visual images and the
+        # default coordinate space accepted by computer_action.
+        rect = [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))]
         matches.append({"text": recognized, "confidence": round(float(confidence), 3), "rect": rect})
     matches.sort(key=lambda item: (item["rect"][1], item["rect"][0]))
-    return {"status": "ok", "window": {"hwnd": hex(info.hwnd), "title": info.title},
+    left, top, right, bottom = info.rect
+    return {"status": "ok", "window": {"hwnd": hex(info.hwnd), "title": info.title,
+                                         "origin": [left, top], "size": [right - left, bottom - top]},
+            "coordinate_space": "window",
             "matches": matches[:max(1, min(max_results, 200))]}
 
 
@@ -115,7 +120,8 @@ async def computer_click_text(args: dict) -> str:
                               retryable=True, fallback="刷新窗口后重试一次，再使用标注截图")
         match = result["matches"][index]
         left, top, right, bottom = match["rect"]
-        x, y = (left + right) // 2, (top + bottom) // 2
+        origin_x, origin_y = result["window"]["origin"]
+        x, y = origin_x + (left + right) // 2, origin_y + (top + bottom) // 2
         if not user32.SetCursorPos(x, y):
             raise OSError("移动鼠标失败")
         user32.mouse_event(0x0002, 0, 0, 0, 0)

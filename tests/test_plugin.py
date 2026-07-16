@@ -158,6 +158,62 @@ def test_visual_point_defaults_to_window_physical_pixels():
     assert _point(context, {"x": -400, "y": 250, "coordinate_space": "screen"}) == (-400, 250)
 
 
+def test_state_elements_use_window_local_physical_pixels():
+    from reasonix_computer_use.domain_tools import _window_elements
+    from reasonix_computer_use.windows import WindowInfo
+
+    info = WindowInfo(1, "QQ Music", "TXGuiFoundation", (125, 80, 1325, 880))
+    elements = _window_elements(info, [{"ref": "e1", "role": "Button",
+                                        "rect": [205, 415, 285, 455]}])
+    assert elements[0]["rect"] == [80, 335, 160, 375]
+    assert elements[0]["coordinate_space"] == "window"
+
+
+def test_local_ocr_rect_does_not_include_window_origin(monkeypatch):
+    import numpy as np
+    from reasonix_computer_use import text_vision
+    from reasonix_computer_use.windows import WindowInfo
+
+    info = WindowInfo(11, "QQ Music", "TXGuiFoundation", (125, 80, 1325, 880))
+    image = np.zeros((800, 1200, 3), dtype=np.uint8)
+    result = [([[80, 335], [144, 335], [144, 359], [80, 359]], "喜欢·48", 0.99)]
+    monkeypatch.setattr(text_vision, "_capture_window", lambda *_a, **_k: (image, info))
+    monkeypatch.setattr(text_vision.user32, "GetForegroundWindow", lambda: 11)
+    monkeypatch.setattr(text_vision, "_ocr", lambda: lambda _image: (result, None))
+
+    scanned = text_vision.scan_text("0xb")
+    assert scanned["coordinate_space"] == "window"
+    assert scanned["window"]["origin"] == [125, 80]
+    assert scanned["matches"][0]["rect"] == [80, 335, 144, 359]
+
+
+def test_runtime_perception_survives_mcp_restart(monkeypatch, tmp_path):
+    from reasonix_computer_use import runtime
+    from reasonix_computer_use.windows import WindowInfo
+
+    info = WindowInfo(0x123, "QQ Music", "TXGuiFoundation", (125, 80, 1325, 880),
+                      77, r"E:\QQMusic\QQMusic.exe")
+    monkeypatch.setenv("REASONIX_RUNTIME_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(runtime.user32, "IsWindow", lambda _hwnd: True)
+    monkeypatch.setattr(runtime, "get_window_info", lambda _hwnd: info)
+
+    first_registry = runtime.WindowRegistry()
+    first = first_registry.register(info, {"id": "qqmusic", "name": "QQ Music"})
+    first.update({"texts": [("喜欢·48", [80, 335, 144, 359])]}, "ocr", [{
+        "ref": "o12", "role": "text", "name": "喜欢·48", "value": "must-not-persist",
+        "rect": [80, 335, 144, 359], "coordinate_space": "window",
+    }])
+    first.state_reads_without_action = 2
+    first_registry.persist(first)
+
+    restored = runtime.WindowRegistry().register(info, {"id": "qqmusic", "name": "QQ Music"})
+    assert restored.restored is True
+    assert restored.revision == first.revision
+    assert restored.references["o12"]["name"] == "喜欢·48"
+    assert restored.state_reads_without_action == 2
+    assert "must-not-persist" not in next(tmp_path.glob("*.json")).read_text(encoding="utf-8")
+
+
 def test_send_unicode_text_rejects_silent_sendinput_failure(monkeypatch):
     from reasonix_computer_use import keyboard
 
@@ -677,11 +733,44 @@ async def test_input_like_combobox_is_focused_instead_of_expanded(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_uia_ref_is_relocated_after_mcp_registry_restart(monkeypatch):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.runtime import WindowContext
+    from reasonix_computer_use.windows import WindowInfo
+
+    info = WindowInfo(1, "Settings", "AppWindow", (100, 200, 900, 800))
+    context = WindowContext("w1", 1, restored=True)
+    context.info = lambda: info
+    context.elements = [{"ref": "e4", "role": "Button", "name": "设置",
+                         "id": "settings", "rect": [40, 50, 120, 90],
+                         "coordinate_space": "window", "actions": ["invoke"]}]
+    calls = []
+
+    async def act(args):
+        calls.append(args)
+        if len(calls) == 1:
+            return json.dumps({"status": "error", "code": "stale_ref"})
+        return json.dumps({"status": "ok"})
+
+    monkeypatch.setattr(domain_tools, "uia_act", act)
+    monkeypatch.setattr(domain_tools, "observe", lambda *_a, **_k: {"elements": [{
+        "ref": "e9", "role": "Button", "name": "设置", "id": "settings",
+        "rect": [140, 250, 220, 290], "actions": ["invoke"],
+    }]})
+    result = await domain_tools._click_ref(context, "e4")
+    assert result["status"] == "ok"
+    assert [item["ref"] for item in calls] == ["e4", "e9"]
+    assert context.elements[0]["rect"] == [40, 50, 120, 90]
+
+
+@pytest.mark.asyncio
 async def test_ocr_ref_clicks_its_own_rectangle(monkeypatch):
     from reasonix_computer_use import domain_tools
     from reasonix_computer_use.runtime import WindowContext
+    from reasonix_computer_use.windows import WindowInfo
 
     context = WindowContext("w1", 1)
+    context.info = lambda: WindowInfo(1, "Browser", "WebView", (500, 300, 1300, 900))
     context.elements = [{"ref": "o15", "role": "text", "name": "百度",
                          "rect": [100, 200, 300, 240]}]
     clicks = []
@@ -690,11 +779,14 @@ async def test_ocr_ref_clicks_its_own_rectangle(monkeypatch):
         clicks.append(args)
         return json.dumps({"status": "ok"})
 
+    monkeypatch.setattr(domain_tools, "find_text", lambda *_a, **_k: {
+        "matches": [{"text": "百度", "confidence": 0.99, "rect": [100, 200, 300, 240]}]
+    })
     monkeypatch.setattr(domain_tools, "computer_mouse_click", click)
     result = await domain_tools._execute(context, {"type": "click_text", "ref": "o15"})
     assert result["status"] == "ok"
-    assert clicks[0]["x"] == 200
-    assert clicks[0]["y"] == 220
+    assert clicks[0]["x"] == 700
+    assert clicks[0]["y"] == 520
 
 
 @pytest.mark.asyncio
@@ -713,8 +805,10 @@ async def test_empty_click_text_is_rejected_without_ocr(monkeypatch):
 async def test_link_like_edit_uses_physical_click(monkeypatch):
     from reasonix_computer_use import domain_tools
     from reasonix_computer_use.runtime import WindowContext
+    from reasonix_computer_use.windows import WindowInfo
 
     context = WindowContext("w1", 1)
+    context.info = lambda: WindowInfo(1, "Browser", "WebView", (50, 100, 900, 700))
     context.elements = [{"ref": "e1", "role": "Edit", "name": "DeepSeek | 深度求索",
                          "rect": [150, 350, 330, 380], "actions": ["set_value", "focus"],
                          "class": "cos-link result-title"}]
@@ -727,7 +821,7 @@ async def test_link_like_edit_uses_physical_click(monkeypatch):
     monkeypatch.setattr(domain_tools, "computer_mouse_click", click)
     result = await domain_tools._click_ref(context, "e1")
     assert result["status"] == "ok"
-    assert clicks == [{"x": 240, "y": 365, "button": "left"}]
+    assert clicks == [{"x": 290, "y": 465, "button": "left"}]
 
 
 def test_press_accepts_combined_shortcut_shape():
@@ -761,6 +855,7 @@ async def test_keyboard_supports_punctuation_shortcut(monkeypatch):
 async def test_select_cell_uses_spreadsheet_go_to(monkeypatch):
     from reasonix_computer_use import domain_tools
     from reasonix_computer_use.runtime import WindowContext
+    from reasonix_computer_use.windows import WindowInfo
 
     calls = []
 
@@ -784,7 +879,9 @@ async def test_select_cell_uses_spreadsheet_go_to(monkeypatch):
         {"ref": "e1", "role": "DataItem", "name": "A101", "selected": True}
     ]}])
     monkeypatch.setattr(domain_tools, "observe", lambda *_a, **_k: next(observations))
-    result = await domain_tools._execute(WindowContext("w1", 1),
+    context = WindowContext("w1", 1)
+    context.info = lambda: WindowInfo(1, "Sheet", "XLMAIN", (0, 0, 1200, 800))
+    result = await domain_tools._execute(context,
                                          {"type": "select_cell", "cell": "a101"})
     assert result["status"] == "ok"
     assert result["cell"] == "A101"
@@ -798,6 +895,7 @@ async def test_select_cell_uses_spreadsheet_go_to(monkeypatch):
 async def test_select_range_uses_spreadsheet_go_to(monkeypatch):
     from reasonix_computer_use import domain_tools
     from reasonix_computer_use.runtime import WindowContext
+    from reasonix_computer_use.windows import WindowInfo
 
     calls = []
 
@@ -821,7 +919,9 @@ async def test_select_range_uses_spreadsheet_go_to(monkeypatch):
         {"ref": "e1", "role": "ComboBox", "name": "名称框", "value": "A1:A101"}
     ]}])
     monkeypatch.setattr(domain_tools, "observe", lambda *_a, **_k: next(observations))
-    result = await domain_tools._execute(WindowContext("w1", 1),
+    context = WindowContext("w1", 1)
+    context.info = lambda: WindowInfo(1, "Sheet", "XLMAIN", (0, 0, 1200, 800))
+    result = await domain_tools._execute(context,
                                          {"type": "select_range", "range": "a1:a101"})
     assert result["status"] == "ok"
     assert result["range"] == "A1:A101"

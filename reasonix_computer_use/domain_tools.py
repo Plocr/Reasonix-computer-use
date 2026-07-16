@@ -120,7 +120,7 @@ def _prime_window_state(context: WindowContext, info) -> None:
     """Warm the target UIA provider during launch without returning its tree."""
     try:
         result = observe(hex(info.hwnd), "interactive", MAX_ELEMENTS)
-        elements = result.get("elements", [])
+        elements = _window_elements(info, result.get("elements", []))
         context.update(semantic_state(info, elements), "uia", elements)
     except Exception:
         context.update({"title": info.title, "rect": info.rect, "hwnd": info.hwnd}, "window")
@@ -204,6 +204,7 @@ async def computer_app(args: dict) -> str:
             if not info or time.monotonic() - stable_since < 0.75:
                 return tool_error("window_not_found", "文件已交给系统打开，但未发现对应窗口", retryable=True)
             context = REGISTRY.register(info, app)
+            context.begin_task()
             _prime_window_state(context, info)
             return _ok(file=str(file_path), app=_public_app(app or {}),
                        window=window_payload(context, info), launch_method=launch_method,
@@ -240,6 +241,7 @@ async def computer_app(args: dict) -> str:
             existing = _find_app_window(app, timeout=0.3, stable_seconds=0.0)
             if existing:
                 context = REGISTRY.register(existing, app)
+                context.begin_task()
                 try:
                     activate_window(existing.hwnd)
                 except OSError:
@@ -261,6 +263,7 @@ async def computer_app(args: dict) -> str:
                 return tool_error("window_not_found", "应用已启动，但等待 8 秒后仍未发现窗口", retryable=True,
                                   fallback="调用 computer_app(list_running) 查看新窗口")
             context = REGISTRY.register(info, app)
+            context.begin_task()
             _prime_window_state(context, info)
             payload = {"app": _public_app(app), "window": window_payload(context, info),
                        "launch_method": launch_method, "detached": True,
@@ -352,13 +355,32 @@ def _spreadsheet_hint(info, goal: str) -> dict[str, Any]:
 
 def _bounded_element(item: dict[str, Any]) -> dict[str, Any]:
     allowed = ("ref", "role", "name", "value", "rect", "actions", "id", "class", "confidence",
-               "action", "focused", "selected")
+               "action", "focused", "selected", "coordinate_space")
     result = {key: item.get(key) for key in allowed if item.get(key) not in (None, "", [])}
     for key, maximum in (("name", 120), ("value", 120), ("id", 80), ("class", 80)):
         if key in result:
             value = str(result[key])
             result[key] = value if len(value) <= maximum else value[:maximum - 3] + "..."
     return result
+
+
+def _window_elements(info, elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert UIA screen rectangles to the public window-local pixel space."""
+    origin_x, origin_y = info.rect[0], info.rect[1]
+    normalized = []
+    for element in elements:
+        item = dict(element)
+        rect = item.get("rect")
+        if isinstance(rect, (list, tuple)) and len(rect) == 4:
+            if item.get("coordinate_space") != "window":
+                left, top, right, bottom = (int(value) for value in rect)
+                item["rect"] = [left - origin_x, top - origin_y,
+                                right - origin_x, bottom - origin_y]
+            else:
+                item["rect"] = [int(value) for value in rect]
+            item["coordinate_space"] = "window"
+        normalized.append(item)
+    return normalized
 
 
 def _ocr_elements(window_id: str, goal: str, limit: int) -> list[dict[str, Any]]:
@@ -368,7 +390,8 @@ def _ocr_elements(window_id: str, goal: str, limit: int) -> list[dict[str, Any]]
         if float(match.get("confidence", 0)) < OCR_MIN_CONFIDENCE:
             continue
         items.append({"ref": f"o{len(items) + 1}", "role": "text", "name": str(match.get("text", ""))[:120],
-                      "rect": match.get("rect"), "confidence": match.get("confidence"), "action": "click"})
+                      "rect": match.get("rect"), "confidence": match.get("confidence"), "action": "click",
+                      "coordinate_space": "window"})
     return _relevant(items, goal, limit)
 
 
@@ -416,12 +439,13 @@ async def computer_state(args: dict) -> str:
             return _ok(window=window_payload(context, info), revision=context.revision, source="ocr",
                        unchanged=True, elements=[] if blocked else [_bounded_element(item) for item in cached_matches[:limit]],
                        progress="同一窗口连续观察未执行动作，已熔断" if blocked else "复用当前 revision 的 OCR 缓存",
-                       blocked=blocked, next_hint="停止重复观察并报告阻断" if blocked else "使用 click_text，不调用外部视觉")
+                       blocked=blocked, next_hint=("停止重复观察并报告阻断" if blocked else
+                                                   "使用 click_text 并传返回元素的完整 name，或直接 click_ref；不要改用 click_point"))
         try:
             if same_revision and context.source in ("uia", "ocr"):
                 raise RuntimeError("cached_revision_has_no_matching_target")
             result = observe(hex(info.hwnd), "interactive", MAX_ELEMENTS)
-            all_elements = result.get("elements", [])
+            all_elements = _window_elements(info, result.get("elements", []))
             elements = _relevant(all_elements, goal, limit)
             state = semantic_state(info, all_elements)
             changed = context.update(state, "uia", all_elements)
@@ -457,7 +481,8 @@ async def computer_state(args: dict) -> str:
                                    blocked=True, next_hint="停止重复观察并请求用户介入")
                     return _ok(window=window_payload(context, info), revision=context.revision, source="ocr",
                                elements=ocr_items, progress="本地 OCR 已找到相关文字", blocked=False,
-                               next_hint="使用 click_text；不会调用外部视觉模型",
+                               coordinate_space="window",
+                               next_hint="使用 click_text 并传返回元素的完整 name，或直接 click_ref；不要把 rect 当屏幕坐标",
                                **_spreadsheet_hint(info, goal))
             except Exception as exc:
                 errors["ocr"] = str(exc)[:300]
@@ -522,6 +547,10 @@ def _point(context: WindowContext, action: dict[str, Any]) -> tuple[int, int]:
     return x, y
 
 
+def _element_for_ref(context: WindowContext, ref: str) -> dict[str, Any] | None:
+    return next((item for item in context.elements if item.get("ref") == ref), None) or context.references.get(ref)
+
+
 def _action_sensitive(context: WindowContext, action: dict[str, Any]) -> bool:
     if action.get("confirmed"):
         return False
@@ -530,38 +559,103 @@ def _action_sensitive(context: WindowContext, action: dict[str, Any]) -> bool:
     if any(word in target for word in SENSITIVE_WORDS):
         return True
     if action.get("type") == "click_ref":
-        element = next((item for item in context.elements if item.get("ref") == action.get("ref")), {})
+        element = _element_for_ref(context, str(action.get("ref", ""))) or {}
         label = str(element.get("name", "")).casefold()
         return any(word in label for word in SENSITIVE_WORDS)
     return bool(action.get("sensitive"))
 
 
 async def _click_ref(context: WindowContext, ref: str) -> dict[str, Any]:
-    element = next((item for item in context.elements if item.get("ref") == ref), None)
+    element = _element_for_ref(context, ref)
     if not element:
         return {"status": "error", "code": "stale_ref", "message": "ref 不属于当前 revision"}
     rect = element.get("rect", [])
     if str(ref).startswith("o"):
-        if len(rect) != 4:
-            return {"status": "error", "code": "invalid_ocr_ref", "message": "OCR ref 缺少有效坐标"}
-        left, top, right, bottom = (int(value) for value in rect)
+        name = str(element.get("name", "")).strip()
+        if not name:
+            return {"status": "error", "code": "invalid_ocr_ref", "message": "OCR ref 缺少可重新定位的文字"}
+        current = find_text(hex(context.hwnd), name, True, 20)
+        candidates = [item for item in current.get("matches", [])
+                      if float(item.get("confidence", 0)) >= OCR_MIN_CONFIDENCE]
+        if not candidates:
+            return {"status": "error", "code": "stale_ref", "message": "OCR 目标已不在当前窗口"}
+        if len(rect) == 4:
+            old_x = (int(rect[0]) + int(rect[2])) // 2
+            old_y = (int(rect[1]) + int(rect[3])) // 2
+            candidates.sort(key=lambda item: (
+                ((int(item["rect"][0]) + int(item["rect"][2])) // 2 - old_x) ** 2
+                + ((int(item["rect"][1]) + int(item["rect"][3])) // 2 - old_y) ** 2))
+        left, top, right, bottom = (int(value) for value in candidates[0]["rect"])
+        x, y = _point(context, {"x": (left + right) // 2, "y": (top + bottom) // 2})
         return _parse_result(await computer_mouse_click({
-            "x": (left + right) // 2, "y": (top + bottom) // 2, "button": "left"}))
+            "x": x, "y": y, "button": "left"}))
     actions = element.get("actions", [])
     semantic = "invoke"
     role = str(element.get("role", ""))
     class_name = str(element.get("class", element.get("class_name", ""))).casefold()
     if role in ("Edit", "Document") and "link" in class_name and len(rect) == 4:
         left, top, right, bottom = (int(value) for value in rect)
+        x, y = _point(context, {"x": (left + right) // 2, "y": (top + bottom) // 2})
         return _parse_result(await computer_mouse_click({
-            "x": (left + right) // 2, "y": (top + bottom) // 2, "button": "left"}))
+            "x": x, "y": y, "button": "left"}))
     candidates = (("focus", "click", "set_value", "expand") if role in ("Edit", "Document", "ComboBox")
                   else ("invoke", "toggle", "select", "expand", "focus", "click"))
     for candidate in candidates:
         if candidate in actions:
             semantic = candidate
             break
-    return _parse_result(await uia_act({"ref": ref, "action": semantic, "verify": True}))
+    result = _parse_result(await uia_act({"ref": ref, "action": semantic, "verify": True}))
+    if result.get("code") != "stale_ref":
+        return result
+    info = context.info()
+    current = _window_elements(info, observe(hex(info.hwnd), "interactive", MAX_ELEMENTS).get("elements", []))
+    recovered = _recover_uia_element(element, current)
+    if not recovered:
+        return {"status": "error", "code": "stale_ref", "message": "UIA 目标已不在当前窗口"}
+    context.elements = current
+    for item in current:
+        current_ref = str(item.get("ref", ""))
+        if current_ref:
+            context.references[current_ref] = item
+    return _parse_result(await uia_act({"ref": recovered["ref"], "action": semantic, "verify": True}))
+
+
+def _recover_uia_element(previous: dict[str, Any], current: list[dict[str, Any]]) -> dict[str, Any] | None:
+    previous_id = str(previous.get("automation_id") or previous.get("id") or "")
+    previous_name = str(previous.get("name", "")).strip().casefold()
+    previous_role = str(previous.get("role", "")).casefold()
+    previous_class = str(previous.get("class") or previous.get("class_name") or "").casefold()
+    matches = []
+    for item in current:
+        item_id = str(item.get("automation_id") or item.get("id") or "")
+        item_name = str(item.get("name", "")).strip().casefold()
+        item_role = str(item.get("role", "")).casefold()
+        item_class = str(item.get("class") or item.get("class_name") or "").casefold()
+        stable_id = bool(previous_id and item_id == previous_id)
+        semantic = bool(previous_name and item_name == previous_name
+                        and (not previous_role or item_role == previous_role))
+        if stable_id or semantic:
+            score = (4 if stable_id else 0) + (2 if semantic else 0) + (
+                1 if previous_class and item_class == previous_class else 0)
+            matches.append((score, item))
+    if not matches:
+        return None
+    matches.sort(key=lambda pair: pair[0], reverse=True)
+    best_score = matches[0][0]
+    best = [item for score, item in matches if score == best_score]
+    if len(best) == 1:
+        return best[0]
+    old_rect = previous.get("rect", [])
+    if len(old_rect) != 4:
+        return None
+    old_x = (int(old_rect[0]) + int(old_rect[2])) // 2
+    old_y = (int(old_rect[1]) + int(old_rect[3])) // 2
+    bounded = [item for item in best if len(item.get("rect", [])) == 4]
+    if not bounded:
+        return None
+    return min(bounded, key=lambda item: (
+        ((int(item["rect"][0]) + int(item["rect"][2])) // 2 - old_x) ** 2
+        + ((int(item["rect"][1]) + int(item["rect"][3])) // 2 - old_y) ** 2))
 
 
 def _activate_for_keyboard(context: WindowContext) -> bool:
@@ -651,7 +745,7 @@ async def _verify_spreadsheet_selection(context: WindowContext, target: str) -> 
     await asyncio.sleep(0.15)
     try:
         result = observe(hex(context.hwnd), "interactive", MAX_ELEMENTS)
-        elements = result.get("elements", [])
+        elements = _window_elements(context.info(), result.get("elements", []))
         if _selection_matches(elements, target):
             context.elements = elements
             return True
@@ -695,7 +789,8 @@ async def _save_as(context: WindowContext, action: dict[str, Any]) -> dict[str, 
         except (ValueError, OSError):
             pass
     try:
-        elements = observe(hex(context.hwnd), "interactive", MAX_ELEMENTS).get("elements", [])
+        elements = _window_elements(context.info(), observe(
+            hex(context.hwnd), "interactive", MAX_ELEMENTS).get("elements", []))
     except Exception as exc:
         return {"status": "error", "code": "save_dialog_unavailable", "message": str(exc)[:160]}
     editor = next((item for item in elements if item.get("role") in ("Edit", "ComboBox")
@@ -744,7 +839,7 @@ async def _execute(context: WindowContext, action: dict[str, Any]) -> dict[str, 
         if index < 0 or index >= len(candidates):
             return {"status": "error", "code": "text_not_found", "message": f"OCR 未可靠找到文字：{text}"}
         left, top, right, bottom = candidates[index]["rect"]
-        x, y = (left + right) // 2, (top + bottom) // 2
+        x, y = _point(context, {"x": (left + right) // 2, "y": (top + bottom) // 2})
         return _parse_result(await computer_mouse_click({"x": x, "y": y, "button": "left"}))
     if kind in ("click_point", "double_click", "right_click", "middle_click"):
         x, y = _point(context, action)
@@ -787,7 +882,8 @@ async def _execute(context: WindowContext, action: dict[str, Any]) -> dict[str, 
         await asyncio.sleep(0.2)
         dialog_elements: list[dict[str, Any]] = []
         try:
-            dialog_elements = observe(hex(context.hwnd), "interactive", MAX_ELEMENTS).get("elements", [])
+            dialog_elements = _window_elements(context.info(), observe(
+                hex(context.hwnd), "interactive", MAX_ELEMENTS).get("elements", []))
         except Exception:
             pass
         editor = next((item for item in dialog_elements
@@ -907,7 +1003,7 @@ def _refresh_semantic(context: WindowContext) -> bool:
     info = context.info()
     try:
         result = observe(hex(info.hwnd), "interactive", MAX_ELEMENTS)
-        elements = result.get("elements", [])
+        elements = _window_elements(info, result.get("elements", []))
         return context.update(semantic_state(info, elements), "uia", elements)
     except Exception:
         return context.update({"title": info.title, "rect": info.rect, "hwnd": info.hwnd}, context.source)
@@ -920,7 +1016,8 @@ async def _wait_stable(context: WindowContext, timeout: float = 1.5) -> None:
     while time.monotonic() < deadline:
         try:
             info = context.info()
-            items = observe(hex(info.hwnd), "interactive", MAX_ELEMENTS).get("elements", [])
+            items = _window_elements(info, observe(
+                hex(info.hwnd), "interactive", MAX_ELEMENTS).get("elements", []))
             digest = hashlib.sha1(json.dumps(semantic_state(info, items), ensure_ascii=False,
                                              sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
             stable = stable + 1 if digest == previous else 0
@@ -1000,6 +1097,19 @@ async def computer_action(args: dict) -> str:
         if not isinstance(actions, list) or not 1 <= len(actions) <= MAX_BATCH:
             return tool_error("invalid_batch", "actions 必须包含 1 到 5 个动作")
         actions = [_normalize_action(action) for action in actions]
+        coordinate_actions = {"click_point", "move", "hover", "double_click", "right_click",
+                              "middle_click", "drag"}
+        if context.restored and any(action.get("type") in coordinate_actions for action in actions):
+            if context.source != "visual" or not context.image_hash:
+                return tool_error(
+                    "restored_coordinate_requires_ref",
+                    "MCP 已恢复结构化状态；OCR/UIA 目标必须使用 click_text 或 click_ref，不能复用坐标",
+                    retryable=True,
+                )
+            current_hash = _image_digest(_capture_window(hex(context.hwnd), activate=False)[0])
+            if current_hash != context.image_hash:
+                return tool_error("stale_revision", "窗口图片已经变化；请重新调用 computer_state")
+            context.restored = False
         supported = {"click_ref", "click_text", "click_point", "move", "hover", "double_click",
                      "right_click", "middle_click", "drag", "scroll", "type", "press", "key_down",
                      "key_up", "select_cell", "select_range", "save_as", "wait"}
@@ -1029,7 +1139,7 @@ async def computer_action(args: dict) -> str:
                 action["_target_ref"] = last_edit_ref
             memory_action = dict(action)
             if action.get("type") == "click_ref":
-                element = next((item for item in context.elements if item.get("ref") == action.get("ref")), None)
+                element = _element_for_ref(context, str(action.get("ref", "")))
                 if element:
                     memory_action["text"] = element.get("name", "")
                     memory_action["selector"] = {key: element.get(key) for key in
@@ -1064,7 +1174,7 @@ async def computer_action(args: dict) -> str:
                                      "progress": "动作失败，后续动作未执行", "blocked": context.hard_blocked or level >= 3,
                                      "next_hint": f"重新观察并升级到 {STRATEGIES[level]}"})
             if action.get("type") == "click_ref":
-                target = next((item for item in context.elements if item.get("ref") == action.get("ref")), {})
+                target = _element_for_ref(context, str(action.get("ref", ""))) or {}
                 last_edit_ref = str(action.get("ref")) if target.get("role") in ("Edit", "Document", "ComboBox") else ""
                 context.focused_ref = last_edit_ref
             elif action.get("type") not in ("wait",):
