@@ -9,7 +9,6 @@ import importlib.util
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import time
@@ -22,6 +21,7 @@ from .input_guard import reserve_text_input
 from .keyboard import VK_MAP, _send_key, computer_keyboard_press, computer_keyboard_type, paste_unicode_text
 from .mcp_server import register_tool
 from .mouse import computer_mouse_click, computer_mouse_move, computer_mouse_scroll
+from .process_broker import LaunchBrokerError, launch_via_system_broker, shell_execute
 from .runtime import (REGISTRY, STRATEGIES, WindowContext, memory_candidates, remember_success,
                       semantic_state, window_payload)
 from .screenshot import _capture_window, _get_screenshot_dir
@@ -41,8 +41,6 @@ DEFAULT_ELEMENTS = 40
 MAX_BATCH = 5
 OCR_MIN_CONFIDENCE = 0.65
 SENSITIVE_WORDS = ("密码", "验证码", "支付", "付款", "购买", "删除", "卸载", "协议", "password", "captcha", "payment")
-CREATE_DETACHED_PROCESS = 0x00000008
-CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 
 def _ok(**values: Any) -> str:
@@ -70,12 +68,15 @@ def _public_app(item: dict[str, Any]) -> dict[str, Any]:
             if item.get(key) not in (None, "")}
 
 
-def _find_app_window(app: dict[str, Any], pid: int = 0, timeout: float = 8.0):
+def _find_app_window(app: dict[str, Any], pid: int = 0, timeout: float = 8.0,
+                     stable_seconds: float = 0.75):
     deadline = time.monotonic() + timeout
     target = str(app.get("path", "")).casefold()
     name = str(app.get("name", "")).casefold()
     stem = Path(target).stem.casefold() if target else ""
     best = None
+    stable_key: tuple[int, int] | None = None
+    stable_since = 0.0
     while time.monotonic() < deadline:
         candidates = [item for item in list_windows()
                       if item.rect[0] > -30000 and item.rect[1] > -30000
@@ -89,46 +90,30 @@ def _find_app_window(app: dict[str, Any], pid: int = 0, timeout: float = 8.0):
         # "WPS"). Never use a partial title match as application identity.
         ranked = exact or process or executable or exact_title
         if ranked:
-            best = max(ranked, key=lambda item: (item.rect[2] - item.rect[0]) * (item.rect[3] - item.rect[1]))
-            break
+            current = max(ranked, key=lambda item: (item.rect[2] - item.rect[0]) * (item.rect[3] - item.rect[1]))
+            key = (current.hwnd, current.pid)
+            if key != stable_key:
+                stable_key = key
+                stable_since = time.monotonic()
+            best = current
+            if time.monotonic() - stable_since >= stable_seconds:
+                break
+        else:
+            stable_key = None
+            stable_since = 0.0
         time.sleep(0.15)
-    return best
+    return best if stable_key and time.monotonic() - stable_since >= stable_seconds else None
 
 
-def _launch(app: dict[str, Any]) -> tuple[int, Any]:
+def _launch(app: dict[str, Any]) -> tuple[int, str]:
     target = str(app.get("launch_target") or app.get("path") or "")
     if target.casefold().startswith("shell:appsfolder\\"):
-        explorer = str(Path(os.environ.get("WINDIR", r"C:\Windows")) / "explorer.exe")
-        process = subprocess.Popen([explorer, target], stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                   close_fds=True,
-                                   creationflags=(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                                                  | CREATE_DETACHED_PROCESS))
-        return process.pid, process
+        shell_execute(target)
+        return 0, "wmi-explorer"
     if not target or not os.path.isfile(target):
         raise FileNotFoundError(f"应用启动目标不存在：{target or app.get('name')}")
     args = str(app.get("launch_args") or "")
-    command = [target]
-    if args:
-        command.extend(shlex.split(args, posix=False))
-    flags = (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-             | CREATE_DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB)
-    try:
-        process = subprocess.Popen(command, cwd=str(Path(target).parent),
-                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, close_fds=True,
-                                   creationflags=flags)
-        return process.pid, process
-    except OSError as exc:
-        if getattr(exc, "winerror", None) not in (5, 87):
-            raise
-        # Some hosts use a Job Object that forbids explicit breakaway. Delegate
-        # to the Windows shell so Explorer can own the application process.
-        startfile_options = {"cwd": str(Path(target).parent)}
-        if args:
-            startfile_options["arguments"] = args
-        os.startfile(target, **startfile_options)
-        return 0, None
+    return launch_via_system_broker(target, args, str(Path(target).parent))
 
 
 def _prime_window_state(context: WindowContext, info) -> None:
@@ -187,22 +172,15 @@ async def computer_app(args: dict) -> str:
                 target = str(app.get("launch_target") or app.get("path") or "")
                 if not target or not os.path.isfile(target):
                     return tool_error("stale_app_path", "指定应用启动路径无效")
-                flags = (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                         | CREATE_DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB)
-                try:
-                    process = subprocess.Popen([target, str(file_path)], cwd=str(Path(target).parent),
-                                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                               stderr=subprocess.DEVNULL, close_fds=True,
-                                               creationflags=flags)
-                    pid = process.pid
-                except OSError as exc:
-                    if getattr(exc, "winerror", None) not in (5, 87):
-                        raise
-                    os.startfile(str(file_path))
+                pid, launch_method = launch_via_system_broker(
+                    target, subprocess.list2cmdline([str(file_path)]), str(Path(target).parent))
             else:
-                os.startfile(str(file_path))
+                shell_execute(str(file_path))
+                launch_method = "wmi-explorer"
             deadline = time.monotonic() + 8
             info = None
+            stable_key: tuple[int, int] | None = None
+            stable_since = 0.0
             while time.monotonic() < deadline:
                 candidates = list_windows()
                 named = [item for item in candidates if file_path.stem.casefold() in item.title.casefold()]
@@ -210,15 +188,26 @@ async def computer_app(args: dict) -> str:
                 owned = [item for item in candidates if pid and item.pid == pid]
                 ranked = named or owned or created
                 if ranked:
-                    info = max(ranked, key=lambda item: (item.rect[2] - item.rect[0]) * (item.rect[3] - item.rect[1]))
-                    break
+                    current = max(ranked, key=lambda item: (item.rect[2] - item.rect[0]) *
+                                                         (item.rect[3] - item.rect[1]))
+                    key = (current.hwnd, current.pid)
+                    if key != stable_key:
+                        stable_key = key
+                        stable_since = time.monotonic()
+                    info = current
+                    if time.monotonic() - stable_since >= 0.75:
+                        break
+                else:
+                    stable_key = None
+                    stable_since = 0.0
                 time.sleep(0.15)
-            if not info:
+            if not info or time.monotonic() - stable_since < 0.75:
                 return tool_error("window_not_found", "文件已交给系统打开，但未发现对应窗口", retryable=True)
             context = REGISTRY.register(info, app)
             _prime_window_state(context, info)
             return _ok(file=str(file_path), app=_public_app(app or {}),
-                       window=window_payload(context, info), next_hint="调用 computer_state")
+                       window=window_payload(context, info), launch_method=launch_method,
+                       detached=True, next_hint="调用 computer_state")
         if operation == "launch":
             app = find_app(str(args.get("app_id", ""))) if args.get("app_id") else None
             normalized_query = ""
@@ -248,7 +237,7 @@ async def computer_app(args: dict) -> str:
                     app = strong[0]
             if app is None:
                 return tool_error("app_not_found", "必须提供有效 app_id 或 query")
-            existing = _find_app_window(app, timeout=0.2)
+            existing = _find_app_window(app, timeout=0.3, stable_seconds=0.0)
             if existing:
                 context = REGISTRY.register(existing, app)
                 try:
@@ -259,14 +248,14 @@ async def computer_app(args: dict) -> str:
                 return _ok(app=_public_app(app), window=window_payload(context, existing), reused=True,
                            next_hint="调用 computer_state 获取当前窗口状态")
             try:
-                pid, _ = _launch(app)
+                pid, launch_method = _launch(app)
             except FileNotFoundError:
                 build_index(f"stale-launch-target:{app.get('name')}")
                 refreshed = find_app(str(app.get("id", "")))
                 if not refreshed:
                     return tool_error("stale_app_path", "应用路径已失效，索引已刷新", retryable=True)
                 app = refreshed
-                pid, _ = _launch(app)
+                pid, launch_method = _launch(app)
             info = _find_app_window(app, pid)
             if not info:
                 return tool_error("window_not_found", "应用已启动，但等待 8 秒后仍未发现窗口", retryable=True,
@@ -274,6 +263,7 @@ async def computer_app(args: dict) -> str:
             context = REGISTRY.register(info, app)
             _prime_window_state(context, info)
             payload = {"app": _public_app(app), "window": window_payload(context, info),
+                       "launch_method": launch_method, "detached": True,
                        "next_hint": "调用 computer_state 获取与目标相关的 UIA/OCR 元素"}
             if normalized_query:
                 payload["normalized_from"] = {"app_id": normalized_query}
@@ -303,8 +293,15 @@ async def computer_app(args: dict) -> str:
             user32.PostMessageW(info.hwnd, 0x0010, 0, 0)
             return _ok(closed="window", app=context.app_name or info.title)
         return tool_error("invalid_operation", f"不支持的应用操作：{operation}")
+    except LaunchBrokerError as exc:
+        return parse_result({"status": "error", "code": "launch_isolation_failed",
+                             "message": str(exc), "retryable": False, "blocked": True,
+                             "next_hint": "停止重复启动；WMI 系统代理不可用，需用户检查 Windows Management Instrumentation 服务"})
     except KeyError:
-        return tool_error("unknown_window", "window_id 不存在；请调用 computer_app(list_running)")
+        return parse_result({"status": "error", "code": "unknown_window", "retryable": False,
+                             "blocked": True,
+                             "message": "window_id 无法恢复；旧式窗口 ID 可能来自已重启的 MCP 进程",
+                             "next_hint": "停止重复 launch；调用一次 computer_app(list_running) 获取稳定窗口 ID，仍无目标窗口则请求用户介入"})
     except Exception as exc:
         return tool_error("app_operation_failed", str(exc), retryable=True)
 
@@ -494,7 +491,10 @@ async def computer_state(args: dict) -> str:
                    progress="当前感知模式未找到目标", blocked=True,
                    next_hint=f"升级到 {STRATEGIES[context.strategy_level]} 或请求用户介入", errors=errors)
     except KeyError:
-        return tool_error("unknown_window", "window_id 不存在；请先调用 computer_app")
+        return parse_result({"status": "error", "code": "unknown_window", "retryable": False,
+                             "blocked": True,
+                             "message": "window_id 无法恢复；禁止重复启动同一应用",
+                             "next_hint": "调用一次 computer_app(list_running) 获取稳定窗口 ID，仍未找到则停止并报告阻断"})
     except Exception as exc:
         return tool_error("state_failed", str(exc), retryable=True)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ctypes
 import json
 import os
 import subprocess
@@ -11,6 +12,9 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+
+if os.name == "nt":
+    from ctypes import wintypes
 
 from .replay import replay_document, replay_trace, score_documents
 from .trace import list_traces, read_trace, sanitize
@@ -85,6 +89,98 @@ def run_app_smoke(value: str) -> dict[str, Any]:
                    payload, (time.perf_counter() - started) * 1000)
 
 
+def run_launch_lifecycle(value: str) -> dict[str, Any]:
+    """Prove that a brokered GUI survives after its launching worker exits."""
+    if os.name != "nt":
+        return _result("launch-lifecycle", True, {"skipped": "Windows backend only"})
+    path = _validate_app_path(value)
+    from .windows import list_windows, user32
+
+    before = {item.hwnd for item in list_windows()}
+    script = ("import sys; sys.stdin.readline(); "
+              "from reasonix_computer_use.process_broker import launch_via_system_broker; "
+              "print(launch_via_system_broker(sys.argv[1]))")
+    started = time.perf_counter()
+    worker = _run_in_kill_on_close_job([sys.executable, "-c", script, str(path)])
+    info = None
+    deadline = time.monotonic() + 10
+    while worker["returncode"] == 0 and time.monotonic() < deadline:
+        matches = [item for item in list_windows()
+                   if item.hwnd not in before and item.process_path.casefold() == str(path).casefold()]
+        if matches:
+            info = max(matches, key=lambda item: ((item.rect[2] - item.rect[0]) *
+                                                  (item.rect[3] - item.rect[1])))
+            break
+        time.sleep(0.15)
+    if info:
+        user32.PostMessageW(info.hwnd, 0x0010, 0, 0)
+    return _result("launch-lifecycle", worker["returncode"] == 0 and info is not None,
+                   {"worker_exited": True, "window_survived": info is not None,
+                    "job_closed": worker["job_closed"],
+                    "broker": worker["stdout"].strip()[:40], "stderr": worker["stderr"][:200]},
+                   (time.perf_counter() - started) * 1000)
+
+
+def _run_in_kill_on_close_job(command: list[str]) -> dict[str, Any]:
+    """Run a short-lived worker in a nested Job and close that Job before returning."""
+    if os.name != "nt":
+        completed = subprocess.run(command, cwd=str(ROOT), capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace", timeout=15)
+        return {"returncode": completed.returncode, "stdout": completed.stdout,
+                "stderr": completed.stderr, "job_closed": False}
+
+    class BASIC_LIMIT(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulonglong) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+    class EXTENDED_LIMIT(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BASIC_LIMIT), ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    api = ctypes.WinDLL("kernel32", use_last_error=True)
+    api.CreateJobObjectW.restype = wintypes.HANDLE
+    api.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    api.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    job = api.CreateJobObjectW(None, None)
+    if not job:
+        raise ctypes.WinError(ctypes.get_last_error())
+    worker = None
+    try:
+        limits = EXTENDED_LIMIT()
+        limits.BasicLimitInformation.LimitFlags = 0x00002000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not api.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        worker = subprocess.Popen(command, cwd=str(ROOT), stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                  encoding="utf-8", errors="replace")
+        if not api.AssignProcessToJobObject(job, wintypes.HANDLE(worker._handle)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        worker.stdin.write("run\n")
+        worker.stdin.flush()
+        worker.stdin.close()
+        worker.stdin = None
+        stdout, stderr = worker.communicate(timeout=15)
+        returncode = worker.returncode
+    finally:
+        api.CloseHandle(job)
+        if worker is not None and worker.poll() is None:
+            worker.kill()
+    return {"returncode": returncode, "stdout": stdout, "stderr": stderr, "job_closed": True}
+
+
 async def _online_contract(path: Path) -> dict[str, Any]:
     if os.name != "nt":
         return _result("online-uia-contract", True, {"skipped": "Windows backend only"})
@@ -147,6 +243,7 @@ def run_full(app: str = "") -> list[dict[str, Any]]:
     if app:
         try:
             checks.append(run_app_smoke(app))
+            checks.append(run_launch_lifecycle(app))
             checks.append(asyncio.run(_online_contract(_validate_app_path(app))))
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             checks.append(_result("avalonia-startup", False, str(exc)))

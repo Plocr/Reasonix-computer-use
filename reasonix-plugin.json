@@ -16,6 +16,9 @@
     ],
     "PostToolUse": [
       {"command": "reasonix-computer-use.bat --hook", "description": "Track Computer Use attempts without logging user content"}
+    ],
+    "Stop": [
+      {"command": "reasonix-computer-use.bat --hook", "description": "Finish the redacted task trace"}
     ]
   },
   "mcpServers": {

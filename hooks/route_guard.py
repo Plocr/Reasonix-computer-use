@@ -90,7 +90,7 @@ def classify_prompt(prompt: str) -> dict[str, Any]:
     compact = re.sub(r"\s+", "", prompt).casefold()
     marker_count = sum(marker.casefold() in compact for marker in DESKTOP_MARKERS)
     user_requested_cli = any(marker in compact for marker in USER_CLI_MARKERS)
-    desktop_task = marker_count >= 2 or any(marker in compact for marker in ("单元格", "计算器应用", "桌面新建"))
+    desktop_task = marker_count >= 1 or any(marker in compact for marker in ("单元格", "计算器应用", "桌面新建"))
     process_required = desktop_task and any(marker in compact for marker in PROCESS_MARKERS)
     strict_gui = process_required and any(marker in compact for marker in STRICT_GUI_MARKERS)
     mode = "result_only" if user_requested_cli or not desktop_task else ("strict_gui" if strict_gui else "gui_preferred")
@@ -174,15 +174,37 @@ def handle(payload: dict[str, Any]) -> dict[str, Any] | None:
         if state.get("trace_id"):
             try:
                 from reasonix_computer_use.trace import record_event
+                raw_result = payload.get("tool_result", payload.get("toolResult", {}))
+                if isinstance(raw_result, str):
+                    try:
+                        parsed_result = json.loads(raw_result)
+                    except json.JSONDecodeError:
+                        parsed_result = {}
+                else:
+                    parsed_result = raw_result if isinstance(raw_result, dict) else {}
                 record_event(state["trace_id"], "strategy_transition", {
                     "mode": state.get("mode"), "computer_attempts": state.get("computer_attempts"),
                     "computer_failures": state.get("computer_failures"),
                     "blocked": state.get("blocked_seen"),
                     "fallback_authorized": state.get("fallback_authorized")})
+                record_event(state["trace_id"], "verification", {
+                    "tool": tool, "status": parsed_result.get("status"),
+                    "code": parsed_result.get("code"), "blocked": bool(parsed_result.get("blocked")),
+                    "revision": parsed_result.get("revision") or parsed_result.get("window", {}).get("revision", "")})
             except Exception:
                 pass
         _write_state(key, state)
+        if state.get("blocked_seen"):
+            return {"hookSpecificOutput": {"hookEventName": event, "additionalContext":
+                    "Computer Use 已返回 blocked=true。立即停止重复 launch/state/action；不得重新开始相同流程。普通 GUI 任务可按已授权边界采用等价且可逆的降级方案，否则向用户报告最小阻断。"}}
         return None
+    if event == "PreToolUse" and tool in COMPUTER_TOOLS and state.get("blocked_seen"):
+        return {"hookSpecificOutput": {
+            "hookEventName": event,
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "当前任务已收到 blocked=true，禁止重新启动或重复感知/动作。",
+            "additionalContext": "停止 Computer Use 循环；按任务模式使用已授权的安全降级，或向用户报告最小阻断。",
+        }}
     if event == "PreToolUse" and tool in SHELL_TOOLS:
         if state.get("mode") == "strict_gui":
             return {"hookSpecificOutput": {
@@ -211,6 +233,15 @@ def handle(payload: dict[str, Any]) -> dict[str, Any] | None:
                 "hookEventName": event,
                 "additionalContext": "已达到安全降级阈值。只允许等价且可逆的CLI/API方案；必须说明GUI失败点和实际方法，不得声称完成未执行的GUI步骤；外部写入和不可逆操作仍需确认。",
             }}
+    if event == "Stop" and state.get("trace_id"):
+        try:
+            from reasonix_computer_use.trace import finish_trace
+            finish_trace(state["trace_id"], "blocked" if state.get("blocked_seen") else "completed", {
+                "computer_attempts": state.get("computer_attempts", 0),
+                "computer_failures": state.get("computer_failures", 0),
+            })
+        except Exception:
+            pass
     return None
 
 

@@ -227,9 +227,9 @@ CLI 默认使用复制安装。`--link` 仅适合源码位于 Reasonix 允许的
 `dist/`、`runtime/` 等构建产物时使用。放在其他磁盘的开发仓库使用 `--link` 会触发
 `link target escapes skill roots`，此时应去掉 `--link` 或安装 GitHub Release 包。
 
-安装或升级任一来源后，需要结束旧任务，使旧的
-`python -m reasonix_computer_use` MCP 进程退出。新的 Reasonix 工具调用会按当前
-版本重新启动服务。
+安装或升级任一来源后，正在运行的旧 MCP 可能跨任务常驻。Alpha.12 会检测核心文件变化，返回一次
+“插件已更新”并自行退出；重试当前工具调用即可按新版本重启服务。升级自不含该检测的旧版本时，需退出并重新打开
+Reasonix Desktop，或结束命令行为 `python -m reasonix_computer_use` 的进程。
 
 Reasonix 的 Git/本地安装不会执行仓库中的第三方安装脚本，这是平台安全边界。
 不希望配置 Python 环境的用户应使用 Windows 安装器。
@@ -267,6 +267,9 @@ Actions 页面手动构建但不创建 Release。
 - `quick`、`full`、`replay`、`benchmark` 和 `matrix` runner 分别覆盖静态契约、在线合成 GUI、离线轨迹、评分和环境矩阵。
 - Avalonia/.NET 8 测试应用提供稳定 AutomationId；Windows 执行真实 UIA 契约，macOS/Linux 在 Alpha.12 仅构建和启动冒烟。
 - Reasonix 13 映射四个手动命令：`/computer-use:doctor`、`/computer-use:test`、`/computer-use:trace` 和 `/computer-use:benchmark`。自然语言任务仍自动路由。
+- 窗口 ID 绑定 HWND、PID 和 app_id，可在 Reasonix 重启 MCP stdio 进程后恢复，并跟踪启动器切换出的新主窗口；旧式未知 ID 会立即熔断，避免重复启动应用。
+- 传统 EXE 由 WMI `Win32_Process.Create` 系统代理启动，不继承 Reasonix MCP 的 `KILL_ON_JOB_CLOSE` Job；`launch` 只有在目标窗口稳定后才返回 `detached:true`。文件关联和 UWP 激活由同一代理转交 Explorer。
+- `blocked:true` 会在下一次 Computer Use 执行前触发硬门禁；任务级 Hook trace 记录失败工具和最终状态，不再依赖成功的窗口上下文。
 
 完整命令和发布门禁见 [能力测试说明](docs/CAPABILITY_TESTING.zh-CN.md)。
 
@@ -287,9 +290,9 @@ python -m pytest -q
 python -m reasonix_computer_use.session_start
 ```
 
-Alpha.12 当前包含 96 项自动测试，覆盖动作 schema、物理坐标、revision、首次依赖安装、
+Alpha.12 当前包含 103 项自动测试，覆盖动作 schema、物理坐标、revision、首次依赖安装、
 UIA/OCR/视觉回退、Unicode 输入、WebView ComboBox、剪贴板恢复、熔断和
-Shell 逃逸阻断。
+Shell 逃逸阻断。Windows full runner 还会创建并关闭一个 `KILL_ON_JOB_CLOSE` 测试 Job，验证代理启动的 GUI 在 worker 退出后仍存活。
 
 ## 安全边界
 

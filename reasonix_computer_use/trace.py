@@ -101,7 +101,6 @@ def _atomic_json(path: Path, document: dict[str, Any]) -> None:
         with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
             json.dump(document, stream, ensure_ascii=False, separators=(",", ":"))
             stream.flush()
-            os.fsync(stream.fileno())
         os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):

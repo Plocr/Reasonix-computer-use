@@ -401,63 +401,72 @@ def test_uninstaller_is_not_a_launch_target(tmp_path):
     assert _launchable_executable(str(app)) is True
 
 
-def test_launch_breaks_away_from_reasonix_job(monkeypatch, tmp_path):
+def test_launch_uses_wmi_broker(monkeypatch, tmp_path):
     from reasonix_computer_use import domain_tools
 
     executable = tmp_path / "app.exe"
     executable.touch()
     calls = []
-
-    class Process:
-        pid = 1234
-
-    monkeypatch.setattr(domain_tools.subprocess, "Popen",
-                        lambda command, **kwargs: calls.append((command, kwargs)) or Process())
-    pid, _process = domain_tools._launch({"path": str(executable)})
+    monkeypatch.setattr(domain_tools, "launch_via_system_broker",
+                        lambda target, args, cwd: calls.append((target, args, cwd)) or (1234, "wmi"))
+    pid, method = domain_tools._launch({"path": str(executable)})
     assert pid == 1234
-    flags = calls[0][1]["creationflags"]
-    assert flags & domain_tools.CREATE_BREAKAWAY_FROM_JOB
-    assert flags & domain_tools.CREATE_DETACHED_PROCESS
+    assert method == "wmi"
+    assert calls == [(str(executable), "", str(executable.parent))]
 
 
-def test_launch_uses_shell_when_job_forbids_breakaway(monkeypatch, tmp_path):
+def test_launch_shell_app_uses_wmi_explorer(monkeypatch):
+    from reasonix_computer_use import domain_tools
+
+    launched = []
+    monkeypatch.setattr(domain_tools, "shell_execute", lambda target: launched.append(target))
+    pid, method = domain_tools._launch({"path": r"shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"})
+    assert (pid, method) == (0, "wmi-explorer")
+    assert launched == [r"shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"]
+
+
+def test_launch_broker_passes_nonempty_arguments(monkeypatch, tmp_path):
     from reasonix_computer_use import domain_tools
 
     executable = tmp_path / "app.exe"
     executable.touch()
     launched = []
-
-    def denied(*_args, **_kwargs):
-        error = OSError("breakaway denied")
-        error.winerror = 5
-        raise error
-
-    monkeypatch.setattr(domain_tools.subprocess, "Popen", denied)
-    monkeypatch.setattr(domain_tools.os, "startfile",
-                        lambda path, **kwargs: launched.append((path, kwargs)))
-    pid, process = domain_tools._launch({"path": str(executable)})
-    assert (pid, process) == (0, None)
-    assert launched[0][0] == str(executable)
-    assert "arguments" not in launched[0][1]
-
-
-def test_launch_shell_passes_nonempty_arguments(monkeypatch, tmp_path):
-    from reasonix_computer_use import domain_tools
-
-    executable = tmp_path / "app.exe"
-    executable.touch()
-    launched = []
-
-    def denied(*_args, **_kwargs):
-        error = OSError("breakaway denied")
-        error.winerror = 5
-        raise error
-
-    monkeypatch.setattr(domain_tools.subprocess, "Popen", denied)
-    monkeypatch.setattr(domain_tools.os, "startfile",
-                        lambda path, **kwargs: launched.append((path, kwargs)))
+    monkeypatch.setattr(domain_tools, "launch_via_system_broker",
+                        lambda target, args, cwd: launched.append((target, args, cwd)) or (123, "wmi"))
     domain_tools._launch({"path": str(executable), "launch_args": "--new-window"})
-    assert launched[0][1]["arguments"] == "--new-window"
+    assert launched[0][1] == "--new-window"
+
+
+def test_wmi_broker_uses_fixed_script_and_environment(monkeypatch):
+    from reasonix_computer_use import process_broker
+
+    calls = []
+
+    class Completed:
+        returncode = 0
+        stdout = "4321"
+        stderr = ""
+
+    monkeypatch.setattr(process_broker.subprocess, "run",
+                        lambda command, **kwargs: calls.append((command, kwargs)) or Completed())
+    pid, method = process_broker.launch_via_system_broker(
+        r"C:\Apps\app.exe", '--name "value"', r"C:\Apps")
+    assert (pid, method) == (4321, "wmi")
+    assert calls[0][1]["env"]["REASONIX_BROKER_COMMAND"] == 'C:\\Apps\\app.exe --name "value"'
+    assert "C:\\Apps\\app.exe" not in " ".join(calls[0][0])
+
+
+def test_wmi_broker_rejects_failed_creation(monkeypatch):
+    from reasonix_computer_use import process_broker
+
+    class Completed:
+        returncode = 1
+        stdout = ""
+        stderr = "access denied"
+
+    monkeypatch.setattr(process_broker.subprocess, "run", lambda *_a, **_k: Completed())
+    with pytest.raises(process_broker.LaunchBrokerError, match="access denied"):
+        process_broker.launch_via_system_broker(r"C:\Apps\app.exe")
 
 
 def test_edge_components_are_not_application_candidates():
@@ -526,6 +535,24 @@ async def test_launch_treats_unknown_app_id_as_query(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_launch_broker_failure_is_blocking(monkeypatch):
+    from reasonix_computer_use import domain_tools
+    from reasonix_computer_use.process_broker import LaunchBrokerError
+
+    app = {"id": "app", "name": "App", "path": r"C:\App\app.exe",
+           "launch_target": r"C:\App\app.exe"}
+    monkeypatch.setattr(domain_tools, "environment_status", lambda: {"ready": True})
+    monkeypatch.setattr(domain_tools, "find_app", lambda _app_id: app)
+    monkeypatch.setattr(domain_tools, "_find_app_window", lambda *_a, **_k: None)
+    monkeypatch.setattr(domain_tools, "_launch",
+                        lambda _app: (_ for _ in ()).throw(LaunchBrokerError("WMI unavailable")))
+    result = json.loads(await domain_tools.computer_app({"operation": "launch", "app_id": "app"}))
+    assert result["code"] == "launch_isolation_failed"
+    assert result["retryable"] is False
+    assert result["blocked"] is True
+
+
+@pytest.mark.asyncio
 async def test_open_file_returns_tracked_window(monkeypatch, tmp_path):
     from reasonix_computer_use import domain_tools
     from reasonix_computer_use.runtime import WindowContext
@@ -537,7 +564,7 @@ async def test_open_file_returns_tracked_window(monkeypatch, tmp_path):
                       r"C:\Office\EXCEL.EXE")
     context = WindowContext("w1", 2, app_name="Excel", owner_pid=22)
     monkeypatch.setattr(domain_tools, "list_windows", lambda: [info])
-    monkeypatch.setattr(domain_tools.os, "startfile", lambda _path: None)
+    monkeypatch.setattr(domain_tools, "shell_execute", lambda _path: 123)
     monkeypatch.setattr(domain_tools.REGISTRY, "register", lambda *_a, **_k: context)
     monkeypatch.setattr(domain_tools, "_prime_window_state", lambda *_a, **_k: None)
     monkeypatch.setattr(domain_tools, "window_payload", lambda *_a, **_k: {"id": "w1"})
@@ -1209,7 +1236,7 @@ def test_manifest_and_docs_reference_new_api():
     manifest = json.loads((root / "reasonix-plugin.json").read_text(encoding="utf-8"))
     assert manifest["version"] == "0.8.0-alpha.12"
     assert manifest["commands"] == ["commands"]
-    assert set(manifest["hooks"]) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"}
+    assert set(manifest["hooks"]) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"}
     routing = (root / "CLAUDE.md").read_text(encoding="utf-8")
     assert "chrome-devtools" in routing
     assert "computer_task_start" not in routing

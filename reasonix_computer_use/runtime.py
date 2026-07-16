@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -53,7 +55,10 @@ class WindowContext:
 
     def info(self) -> WindowInfo:
         if user32.IsWindow(self.hwnd):
-            return get_window_info(self.hwnd)
+            try:
+                return get_window_info(self.hwnd)
+            except (OSError, ValueError):
+                pass
         candidates = list_windows()
         if self.app_path:
             exact = [item for item in candidates if item.process_path.casefold() == self.app_path.casefold()]
@@ -132,7 +137,6 @@ class WindowContext:
 class WindowRegistry:
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._next = 1
         self._contexts: dict[str, WindowContext] = {}
 
     def register(self, info: WindowInfo, app: dict[str, Any] | None = None) -> WindowContext:
@@ -152,8 +156,11 @@ class WindowRegistry:
                     context.app_path = info.process_path or str(app.get("path", ""))
                     context.app_fingerprint = _hash({key: app.get(key, "") for key in ("id", "version", "sha256")})
                     return context
-            window_id = f"w{self._next}"
-            self._next += 1
+            # The MCP host may restart the stdio server between tool calls.
+            # Encode the HWND so a returned id can be recovered in a new process.
+            app_id = str((app or {}).get("id", ""))
+            suffix = f"-{app_id}" if re.fullmatch(r"[A-Za-z0-9._-]{1,80}", app_id) else ""
+            window_id = f"w-{info.hwnd:x}-{info.pid:x}{suffix}"
             context = WindowContext(
                 window_id=window_id, hwnd=info.hwnd, app_id=str((app or {}).get("id", "")),
                 app_name=str((app or {}).get("name", "")), app_path=info.process_path or str((app or {}).get("path", "")),
@@ -170,7 +177,48 @@ class WindowRegistry:
                 return self._contexts[window_id]
         if str(window_id).lower().startswith("0x") or str(window_id).isdigit():
             return self.register(get_window_info(int(str(window_id), 0)))
+        match = re.fullmatch(r"w-([0-9a-fA-F]+)-([0-9a-fA-F]+)(?:-([A-Za-z0-9._-]{1,80}))?",
+                             str(window_id))
+        if match:
+            app_id = match.group(3) or ""
+            try:
+                info = get_window_info(int(match.group(1), 16))
+                if info.pid == int(match.group(2), 16):
+                    return self.register(info, {"id": app_id} if app_id else None)
+            except (OSError, ValueError):
+                pass
+            recovered = self._recover_app(app_id) if app_id else None
+            if recovered:
+                info, app = recovered
+                return self.register(info, app)
         raise KeyError(window_id)
+
+    @staticmethod
+    def _recover_app(app_id: str, timeout: float = 5.0) -> tuple[WindowInfo, dict[str, Any]] | None:
+        """Follow launchers that replace their initial HWND or process."""
+        from .system_index import find_app
+
+        app = find_app(app_id)
+        if not app:
+            return None
+        target = str(app.get("path") or app.get("launch_target") or "").casefold()
+        stem = Path(target).stem.casefold() if target and not target.startswith("shell:") else ""
+        name = str(app.get("name", "")).casefold()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            candidates = [item for item in list_windows()
+                          if item.rect[0] > -30000 and item.rect[1] > -30000
+                          and item.rect[2] - item.rect[0] >= 50 and item.rect[3] - item.rect[1] >= 30]
+            exact = [item for item in candidates if target and item.process_path.casefold() == target]
+            executable = [item for item in candidates
+                          if stem and Path(item.process_path).stem.casefold() == stem]
+            titled = [item for item in candidates if name and item.title.casefold() == name]
+            ranked = exact or executable or titled
+            if ranked:
+                return max(ranked, key=lambda item: ((item.rect[2] - item.rect[0]) *
+                                                     (item.rect[3] - item.rect[1]))), app
+            time.sleep(0.15)
+        return None
 
     def find(self, app_id: str = "", query: str = "") -> WindowContext:
         with self._lock:

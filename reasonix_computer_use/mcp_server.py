@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from . import __version__
@@ -58,6 +59,22 @@ def create_error(request_id: Any, code: int, message: str) -> dict[str, Any]:
 
 # Tool registry (populated by decorators)
 TOOLS: dict[str, dict[str, Any]] = {}
+
+
+def _source_signature(paths: list[Path] | None = None) -> tuple[tuple[str, int, int], ...]:
+    watched = paths or [Path(__file__), Path(__file__).with_name("runtime.py"),
+                        Path(__file__).with_name("domain_tools.py")]
+    result = []
+    for path in watched:
+        try:
+            stat = path.stat()
+            result.append((str(path), stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            result.append((str(path), 0, 0))
+    return tuple(result)
+
+
+_STARTUP_SOURCE_SIGNATURE = _source_signature()
 
 
 def register_tool(name: str, description: str, schema: dict[str, Any]):
@@ -205,6 +222,12 @@ async def main() -> None:
         method = request.get("method", "")
         request_id = request.get("id")
         params = request.get("params", {})
+
+        if _source_signature() != _STARTUP_SOURCE_SIGNATURE:
+            await write_response(create_error(
+                request_id, -32002,
+                "Computer Use 插件已更新，旧 MCP 服务正在退出；请重试当前工具调用"))
+            break
         
         if method == "initialize":
             response = await handle_initialize(request_id)
