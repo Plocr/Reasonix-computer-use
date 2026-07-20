@@ -34,7 +34,7 @@ def _get_screenshot_dir():
 
 @register_tool(
     name="computer_screenshot",
-    description="""仅在 UIA 连续失败两次后使用。截取一张新的目标窗口标注图；禁止将截图作为第一步。
+    description="""截取屏幕截图。
 
 三种模式：
 - "full": 截取整个屏幕（默认）
@@ -66,36 +66,21 @@ def _get_screenshot_dir():
                 "required": ["x", "y", "width", "height"],
                 "description":"截图区域（region 模式）。虚拟屏幕坐标，副屏可能为负值。"
             },
-            "annotate": {
-                "type": "boolean",
-                "default": False,
-                "description":"是否在截图上叠加 UI 树标注。"
-            },
             "output_path": {
                 "type": "string",
                 "description":"自定义保存路径。省略则保存到 memory/screenshots/。"
-            },
-            "fallback_token": {
-                "type": "string",
-                "description": "UIA 连续失败两次后由 computer_observe 签发的一次性令牌。"
             },
         }
     }
 )
 async def computer_screenshot(args: dict) -> str:
-    """捕获屏幕截图。"""
+    """捕获屏幕截图。
+
+    Vision-only mode: plain screenshot without UIA annotation overlay.
+    """
     mode = args.get("mode", "full")
     output_path = args.get("output_path")
-    annotate = args.get("annotate", False)
-    if mode != "window" or not annotate or not args.get("window_id"):
-        return tool_error("invalid_visual_fallback",
-                          "截图仅允许作为视觉回退，必须使用 mode=window、annotate=true 并指定 window_id")
-    from reasonix_computer_use.ui_tree import consume_visual_fallback
-    allowed, reason = consume_visual_fallback(args.get("fallback_token"), args.get("window_id"))
-    if not allowed:
-        return tool_error("uia_required", reason, retryable=True,
-                          fallback="先对同一目标窗口连续调用两次 computer_observe")
-    
+
     try:
         origin = {"x": 0, "y": 0}
         hwnd = None
@@ -117,7 +102,7 @@ async def computer_screenshot(args: dict) -> str:
             origin = {"x": x, "y": y}
         else:
             return parse_result({"error": f"未知模式: {mode}"})
-        
+
         # 保存到指定路径或默认 memory/screenshots/
         if output_path is None:
             screenshot_dir = _get_screenshot_dir()
@@ -125,49 +110,22 @@ async def computer_screenshot(args: dict) -> str:
         elif not _allowed_screenshot_path(output_path):
             return tool_error("path_denied", "Screenshot output must be inside the screenshot directory or Reasonix workspace")
 
-        annotations = []
-        fallback = None
-        if annotate:
-            try:
-                from PIL import ImageDraw
-                from reasonix_computer_use.ui_tree import observe
-                observed = observe(args.get("window_id"), "interactive", 40)
-                draw = ImageDraw.Draw(screenshot)
-                for index, element in enumerate(observed["elements"], 1):
-                    rect = element["rect"]
-                    local = [rect[0] - origin["x"], rect[1] - origin["y"],
-                             rect[2] - origin["x"], rect[3] - origin["y"]]
-                    if local[2] <= 0 or local[3] <= 0 or local[0] >= screenshot.width or local[1] >= screenshot.height:
-                        continue
-                    label = str(index)
-                    draw.rectangle(local, outline="#ff1744", width=3)
-                    box = [local[0], max(0, local[1] - 18), local[0] + 10 + 8 * len(label), local[1]]
-                    draw.rectangle(box, fill="#ff1744")
-                    draw.text((box[0] + 4, box[1] + 2), label, fill="white")
-                    annotations.append({"n": index, "ref": element["ref"], "role": element["role"],
-                                        "name": element.get("name", ""), "rect": rect})
-            except Exception as exc:
-                fallback = str(exc)
-        
         # 确保目录存在
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         output_path = os.path.realpath(os.path.abspath(output_path))
         screenshot.save(output_path, "PNG")
-        
+
         return parse_result({
             "status": "ok",
             "mode": mode,
             "path": output_path,
             "width": screenshot.width,
             "height": screenshot.height,
-            "annotate": annotate,
             "origin": origin,
             "size": {"width": screenshot.width, "height": screenshot.height},
             "virtual_screen": virtual_screen(),
             "dpi": window_dpi(hwnd) if hwnd else 96,
             "dpi_awareness": DPI_AWARENESS,
-            "annotations": annotations,
-            **({"annotation_fallback": fallback} if fallback else {})
         })
     except Exception as e:
         return parse_result({"error": str(e)})

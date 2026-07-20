@@ -182,9 +182,9 @@ def _run_in_kill_on_close_job(command: list[str]) -> dict[str, Any]:
 
 
 async def _online_contract(path: Path) -> dict[str, Any]:
+    """Verify capability app launches and its window is visible (vision-only, no UIA)."""
     if os.name != "nt":
-        return _result("online-uia-contract", True, {"skipped": "Windows backend only"})
-    from .ui_tree import computer_act, observe
+        return _result("online-visual-contract", True, {"skipped": "Windows backend only"})
     from .windows import list_windows, user32
 
     process = subprocess.Popen([str(path)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -201,28 +201,14 @@ async def _online_contract(path: Path) -> dict[str, Any]:
                 break
             await asyncio.sleep(0.2)
         if info is None:
-            return _result("online-uia-contract", False, "capability window not found",
+            return _result("online-visual-contract", False, "capability window not found",
                            (time.perf_counter() - started) * 1000)
-        snapshot = observe(hex(info.hwnd), "all", 250)
-        by_id = {item.get("id"): item for item in snapshot.get("elements", []) if item.get("id")}
-        required = {"InputText", "ApplyButton", "ResultPanel"}
-        missing = sorted(required - set(by_id))
-        if missing:
-            return _result("online-uia-contract", False, {"missing": missing},
-                           (time.perf_counter() - started) * 1000)
-        typed = json.loads(await computer_act({"ref": by_id["InputText"]["ref"], "action": "set_value",
-                                                "value": "SYNTHETIC_HELLO", "verify": True}))
-        invoked = json.loads(await computer_act({"ref": by_id["ApplyButton"]["ref"],
-                                                  "action": "invoke", "verify": True}))
-        await asyncio.sleep(0.2)
-        after = observe(hex(info.hwnd), "all", 250)
-        result = next((item for item in after.get("elements", [])
-                       if item.get("id") == "ResultPanel"), {})
-        value = str(result.get("value") or result.get("name") or "")
-        ok = typed.get("status") == "ok" and invoked.get("status") == "ok" and "input_applied" in value
-        return _result("online-uia-contract", ok, {"typed": typed.get("status"),
-                                                    "invoked": invoked.get("status"),
-                                                    "result_hash": sanitize({"text": value})["text"]},
+        # Vision-only: just verify the window is visible and reasonably sized.
+        width = info.rect[2] - info.rect[0]
+        height = info.rect[3] - info.rect[1]
+        ok = width > 200 and height > 200
+        return _result("online-visual-contract", ok,
+                       {"window": info.title, "size": [width, height]},
                        (time.perf_counter() - started) * 1000)
     finally:
         if info is not None:

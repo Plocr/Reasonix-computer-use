@@ -201,10 +201,8 @@ def _import_tools():
     """Import all tool modules to trigger registration."""
     from reasonix_computer_use import tools  # noqa: F401
     from reasonix_computer_use.system_index import start_background_enrichment, start_change_watcher
-    from reasonix_computer_use.text_vision import prewarm_ocr
     start_background_enrichment()
     start_change_watcher()
-    prewarm_ocr()
 
 
 async def main() -> None:

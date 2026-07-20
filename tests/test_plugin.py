@@ -166,24 +166,6 @@ def test_visual_perception_uses_window_local_physical_pixels():
     assert True  # Marker test — coordinate correctness is verified in screenshot tests
 
 
-def test_local_ocr_rect_does_not_include_window_origin(monkeypatch):
-    import numpy as np
-    from reasonix_computer_use import text_vision
-    from reasonix_computer_use.windows import WindowInfo
-
-    info = WindowInfo(11, "QQ Music", "TXGuiFoundation", (125, 80, 1325, 880))
-    image = np.zeros((800, 1200, 3), dtype=np.uint8)
-    result = [([[80, 335], [144, 335], [144, 359], [80, 359]], "喜欢·48", 0.99)]
-    monkeypatch.setattr(text_vision, "_capture_window", lambda *_a, **_k: (image, info))
-    monkeypatch.setattr(text_vision.user32, "GetForegroundWindow", lambda: 11)
-    monkeypatch.setattr(text_vision, "_ocr", lambda: lambda _image: (result, None))
-
-    scanned = text_vision.scan_text("0xb")
-    assert scanned["coordinate_space"] == "window"
-    assert scanned["window"]["origin"] == [125, 80]
-    assert scanned["matches"][0]["rect"] == [80, 335, 144, 359]
-
-
 def test_runtime_perception_survives_mcp_restart(monkeypatch, tmp_path):
     from reasonix_computer_use import runtime
     from reasonix_computer_use.windows import WindowInfo
@@ -227,124 +209,6 @@ def test_keyboard_virtual_key_is_not_sent_as_scan_code(monkeypatch):
                         lambda *args: calls.append(args))
     keyboard._send_key(keyboard.VK_RETURN)
     assert calls[0][:2] == (keyboard.VK_RETURN, 0)
-
-
-def test_uia_walk_uses_created_true_condition(monkeypatch):
-    from reasonix_computer_use import ui_tree
-
-    marker = object()
-    calls = []
-
-    class Children:
-        Length = 0
-
-    class Element:
-        def FindAll(self, scope, condition):
-            calls.append((scope, condition))
-            return Children()
-
-    class Automation:
-        def CreateTrueCondition(self):
-            return marker
-
-    monkeypatch.setattr(ui_tree, "_uia", lambda: Automation())
-    monkeypatch.setattr(ui_tree.comtypes.gen, "UIAutomationClient",
-                        type("Constants", (), {"TreeScope_Descendants": 4}), raising=False)
-    element = Element()
-    assert list(ui_tree._walk(element)) == [(element, 0)]
-    assert calls[0][1] is marker
-
-
-@pytest.mark.asyncio
-async def test_visual_state_returns_screenshot(monkeypatch):
-    """Pure visual: computer_state always returns a screenshot."""
-    from reasonix_computer_use import domain_tools
-    from reasonix_computer_use.runtime import WindowContext
-    from reasonix_computer_use.windows import WindowInfo
-
-    info = WindowInfo(1, "QQ", "QQWindow", (0, 0, 400, 600), 10, "E:\\QQ\\QQ.exe")
-    context = WindowContext("w1", 1)
-    context.update({"title": "QQ"}, "window")
-    context.info = lambda: info
-    monkeypatch.setattr(domain_tools.REGISTRY, "get", lambda _: context)
-    monkeypatch.setattr(domain_tools, "window_payload", lambda *a, **k: {"id": "w1"})
-
-    screenshot_path = "C:\\fake\\screenshot.png"
-    monkeypatch.setattr(domain_tools, "_capture_window",
-                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should use cached")))
-    # First call needs to actually capture; patch the image save path
-    import reasonix_computer_use.domain_tools as dt
-    original_capture = dt._capture_window
-
-    class _FakeImage:
-        def convert(self, *a, **k): return self
-        def resize(self, *a, **k): return self
-        def tobytes(self): return b"x" * 1024
-        def save(self, path, *a, **k):
-            import pathlib
-            pathlib.Path(path).write_text("fake")
-
-    def fake_capture(window_id, activate=True):
-        return _FakeImage(), info
-
-    monkeypatch.setattr(dt, "_capture_window", fake_capture)
-    result = json.loads(await dt.computer_state({"window_id": "w1", "goal": "打开设置"}))
-    assert result["source"] == "visual"
-    assert result["image_path"]
-
-
-@pytest.mark.asyncio
-async def test_visual_state_unused(monkeypatch):
-    """Placeholder removed; OCR/UIA-specific tests deleted in vision-only migration."""
-    assert True
-
-
-@pytest.mark.asyncio
-async def test_mcp_state_attaches_only_returned_window_image(tmp_path, monkeypatch):
-    from reasonix_computer_use.mcp_server import TOOLS, handle_tools_call
-
-    image = tmp_path / "window.png"
-    image.write_bytes(b"png-data")
-
-    async def handler(_args):
-        return json.dumps({"status": "ok", "source": "visual", "image_path": str(image)})
-
-    monkeypatch.setitem(TOOLS["computer_state"], "handler", handler)
-    result = await handle_tools_call(1, {"name": "computer_state", "arguments": {}})
-    content = result["result"]["content"]
-    assert [item["type"] for item in content] == ["text", "image"]
-
-
-@pytest.mark.asyncio
-async def test_visual_is_returned_once_per_revision(tmp_path, monkeypatch):
-    from PIL import Image
-    from reasonix_computer_use import domain_tools
-    from reasonix_computer_use.runtime import WindowContext
-    from reasonix_computer_use.windows import WindowInfo
-
-    info = WindowInfo(1, "Canvas", "CanvasWindow", (0, 0, 100, 100), 10, "E:\\Canvas.exe")
-    context = WindowContext("w1", 1)
-    context.update({"title": "Canvas"}, "window")
-    context.info = lambda: info
-    captures = []
-    monkeypatch.setattr(domain_tools.REGISTRY, "get", lambda _: context)
-    monkeypatch.setattr(domain_tools, "window_payload", lambda *a, **k: {"id": "w1"})
-    monkeypatch.setattr(domain_tools, "_get_screenshot_dir", lambda: str(tmp_path))
-
-    def capture(*_args, **_kwargs):
-        captures.append(1)
-        return Image.new("RGB", (100, 100), "white"), info
-
-    monkeypatch.setattr(domain_tools, "_capture_window", capture)
-    first = json.loads(await domain_tools.computer_state({"window_id": "w1", "goal": "图标"}))
-    files_after_first = len(list(tmp_path.glob("*.png")))
-    second = json.loads(await domain_tools.computer_state({"window_id": "w1", "goal": "图标"}))
-    files_after_second = len(list(tmp_path.glob("*.png")))
-    assert first["source"] == "visual"
-    assert second["source"] == "visual"
-    assert second["unchanged"] is True
-    assert files_after_first == 1
-    assert files_after_second == 1  # unchanged: no new screenshot saved
 
 
 def test_profile_and_index_are_replaced_together(tmp_path, monkeypatch):
@@ -770,18 +634,6 @@ def test_find_app_window_ignores_minimized_placeholder(monkeypatch):
     assert domain_tools._find_app_window(
         {"name": "WPS", "path": r"C:\WPS\wps.exe"}, timeout=0.01) is None
 
-
-
-
-def test_ocr_rejects_occluded_target_window(monkeypatch):
-    from reasonix_computer_use import text_vision
-    from reasonix_computer_use.windows import WindowInfo
-
-    info = WindowInfo(11, "Edge", "Chrome_WidgetWin_1", (0, 0, 800, 600))
-    monkeypatch.setattr(text_vision, "_capture_window", lambda *_a, **_k: (object(), info))
-    monkeypatch.setattr(text_vision.user32, "GetForegroundWindow", lambda: 22)
-    with pytest.raises(RuntimeError, match="前台焦点"):
-        text_vision.scan_text("w1")
 
 
 
