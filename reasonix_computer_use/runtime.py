@@ -17,11 +17,13 @@ from .system_profile import memory_dir
 from .windows import WindowInfo, get_window_info, list_windows, user32, window_dpi
 
 
-STRATEGIES = ("memory", "uia", "ocr", "visual")
+STRATEGIES = ("memory", "visual")
+STRATEGY_MEMORY = 0
+STRATEGY_VISUAL = 1
 RUNTIME_STATE_TTL_SECONDS = 300
 RUNTIME_ELEMENT_KEYS = (
-    "ref", "role", "name", "rect", "actions", "id", "automation_id", "class", "class_name",
-    "confidence", "action", "focused", "selected", "coordinate_space",
+    "ref", "role", "name", "rect", "actions", "id", "class", "class_name",
+    "action", "focused", "selected", "coordinate_space",
 )
 
 
@@ -79,7 +81,7 @@ class WindowContext:
     visual_sent_for_revision: str = ""
     failure_hash: str = ""
     failure_count: int = 0
-    strategy_level: int = 1
+    strategy_level: int = 0
     action_signatures: set[str] = field(default_factory=set)
     invalid_action_count: int = 0
     no_progress_count: int = 0
@@ -124,7 +126,7 @@ class WindowContext:
             self.state_hash = digest
             self.failure_count = 0
             self.failure_hash = ""
-            self.strategy_level = 1
+            self.strategy_level = 0
             self.action_signatures.clear()
             self.invalid_action_count = 0
             self.no_progress_count = 0
@@ -149,7 +151,7 @@ class WindowContext:
             self.failure_hash = self.state_hash
             self.failure_count = 1
         if self.failure_count >= 2:
-            self.strategy_level = min(self.strategy_level + 1, len(STRATEGIES) - 1)
+            self.strategy_level = STRATEGY_VISUAL
             self.failure_count = 0
         if self.no_progress_count >= 4:
             self.hard_blocked = True
@@ -177,7 +179,7 @@ class WindowContext:
     def begin_task(self) -> None:
         self.failure_hash = ""
         self.failure_count = 0
-        self.strategy_level = 1
+        self.strategy_level = 0
         self.action_signatures.clear()
         self.invalid_action_count = 0
         self.no_progress_count = 0
@@ -240,7 +242,7 @@ class WindowRegistry:
             if (not isinstance(payload, dict)
                     or time.time() - float(payload.get("updated_at", 0)) > RUNTIME_STATE_TTL_SECONDS
                     or payload.get("identity") != _runtime_identity(info)
-                    or payload.get("source") not in ("uia", "ocr", "memory", "visual")):
+                    or payload.get("source") not in ("memory", "visual")):
                 return
             elements = payload.get("elements", [])
             if not isinstance(elements, list):
@@ -255,7 +257,7 @@ class WindowRegistry:
             context.image_hash = str(payload.get("image_hash", ""))
             context.failure_hash = str(payload.get("failure_hash", ""))
             context.failure_count = max(0, int(payload.get("failure_count", 0)))
-            context.strategy_level = max(1, min(int(payload.get("strategy_level", 1)), len(STRATEGIES) - 1))
+            context.strategy_level = max(0, min(int(payload.get("strategy_level", 0)), STRATEGY_VISUAL))
             signatures = payload.get("action_signatures", [])
             context.action_signatures = {str(item) for item in signatures[:100]} if isinstance(signatures, list) else set()
             context.invalid_action_count = max(0, int(payload.get("invalid_action_count", 0)))
