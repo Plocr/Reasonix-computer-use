@@ -1,8 +1,9 @@
 {
   "name": "computer-use",
   "version": "0.8.0-beta.1",
-  "description": "Reasonix-native Windows computer use with pure visual perception, system index and screenshot-based interaction",
+  "description": "Reasonix-native computer use with pure visual perception, system index and screenshot-based interaction (Windows/macOS/Linux)",
   "skills": "skills",
+  "agents": "agents",
   "commands": ["commands"],
   "hooks": {
     "SessionStart": [

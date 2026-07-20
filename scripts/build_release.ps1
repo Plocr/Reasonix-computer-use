@@ -72,7 +72,7 @@ Remove-Item -LiteralPath (Join-Path $runtime "Scripts") -Recurse -Force -ErrorAc
 
 $files = @(
     "reasonix-plugin.json", "reasonix-computer-use.bat", "README.md", "USER_GUIDE.md",
-    "LICENSE", "CLAUDE.md", "skills", "commands", "hooks"
+    "LICENSE", "CLAUDE.md", "skills", "agents", "commands", "hooks"
 )
 foreach ($file in $files) {
     $source = Join-Path $root $file
