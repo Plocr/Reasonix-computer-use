@@ -27,10 +27,7 @@ from .runtime import (REGISTRY, STRATEGIES, WindowContext, memory_candidates, re
 from .screenshot import _capture_window, _get_screenshot_dir
 from .system_index import (build_index, enrich_index, ensure_index, find_app, is_strong_app_match,
                            query_profile, search_apps)
-from .text_vision import find_text, scan_text
 from .trace import export_trace, list_traces, trace_dir
-from .ui_tree import computer_act as uia_act
-from .ui_tree import observe
 from .utils import parse_result, tool_error
 from .windows import (DPI_AWARENESS, activate_window, get_window_info, list_windows, resolve_window,
                       user32, virtual_screen)
@@ -419,96 +416,17 @@ def _action_sensitive(context: WindowContext, action: dict[str, Any]) -> bool:
 
 
 async def _click_ref(context: WindowContext, ref: str) -> dict[str, Any]:
+    """Click a visual ref: look up its rect in references, convert to screen coords, click center."""
     element = _element_for_ref(context, ref)
     if not element:
-        return {"status": "error", "code": "stale_ref", "message": "ref 不属于当前 revision"}
+        return {"status": "error", "code": "stale_ref", "message": "ref 不属于当前 revision，请重新调用 computer_state"}
     rect = element.get("rect", [])
-    if str(ref).startswith("o"):
-        name = str(element.get("name", "")).strip()
-        if not name:
-            return {"status": "error", "code": "invalid_ocr_ref", "message": "OCR ref 缺少可重新定位的文字"}
-        current = find_text(hex(context.hwnd), name, True, 20)
-        candidates = [item for item in current.get("matches", [])
-                      if float(item.get("confidence", 0)) >= OCR_MIN_CONFIDENCE]
-        if not candidates:
-            return {"status": "error", "code": "stale_ref", "message": "OCR 目标已不在当前窗口"}
-        if len(rect) == 4:
-            old_x = (int(rect[0]) + int(rect[2])) // 2
-            old_y = (int(rect[1]) + int(rect[3])) // 2
-            candidates.sort(key=lambda item: (
-                ((int(item["rect"][0]) + int(item["rect"][2])) // 2 - old_x) ** 2
-                + ((int(item["rect"][1]) + int(item["rect"][3])) // 2 - old_y) ** 2))
-        left, top, right, bottom = (int(value) for value in candidates[0]["rect"])
-        x, y = _point(context, {"x": (left + right) // 2, "y": (top + bottom) // 2})
-        return _parse_result(await computer_mouse_click({
-            "x": x, "y": y, "button": "left"}))
-    actions = element.get("actions", [])
-    semantic = "invoke"
-    role = str(element.get("role", ""))
-    class_name = str(element.get("class", element.get("class_name", ""))).casefold()
-    if role in ("Edit", "Document") and "link" in class_name and len(rect) == 4:
-        left, top, right, bottom = (int(value) for value in rect)
-        x, y = _point(context, {"x": (left + right) // 2, "y": (top + bottom) // 2})
-        return _parse_result(await computer_mouse_click({
-            "x": x, "y": y, "button": "left"}))
-    candidates = (("focus", "click", "set_value", "expand") if role in ("Edit", "Document", "ComboBox")
-                  else ("invoke", "toggle", "select", "expand", "focus", "click"))
-    for candidate in candidates:
-        if candidate in actions:
-            semantic = candidate
-            break
-    result = _parse_result(await uia_act({"ref": ref, "action": semantic, "verify": True}))
-    if result.get("code") != "stale_ref":
-        return result
-    info = context.info()
-    current = _window_elements(info, observe(hex(info.hwnd), "interactive", MAX_ELEMENTS).get("elements", []))
-    recovered = _recover_uia_element(element, current)
-    if not recovered:
-        return {"status": "error", "code": "stale_ref", "message": "UIA 目标已不在当前窗口"}
-    context.elements = current
-    for item in current:
-        current_ref = str(item.get("ref", ""))
-        if current_ref:
-            context.references[current_ref] = item
-    return _parse_result(await uia_act({"ref": recovered["ref"], "action": semantic, "verify": True}))
-
-
-def _recover_uia_element(previous: dict[str, Any], current: list[dict[str, Any]]) -> dict[str, Any] | None:
-    previous_id = str(previous.get("automation_id") or previous.get("id") or "")
-    previous_name = str(previous.get("name", "")).strip().casefold()
-    previous_role = str(previous.get("role", "")).casefold()
-    previous_class = str(previous.get("class") or previous.get("class_name") or "").casefold()
-    matches = []
-    for item in current:
-        item_id = str(item.get("automation_id") or item.get("id") or "")
-        item_name = str(item.get("name", "")).strip().casefold()
-        item_role = str(item.get("role", "")).casefold()
-        item_class = str(item.get("class") or item.get("class_name") or "").casefold()
-        stable_id = bool(previous_id and item_id == previous_id)
-        semantic = bool(previous_name and item_name == previous_name
-                        and (not previous_role or item_role == previous_role))
-        if stable_id or semantic:
-            score = (4 if stable_id else 0) + (2 if semantic else 0) + (
-                1 if previous_class and item_class == previous_class else 0)
-            matches.append((score, item))
-    if not matches:
-        return None
-    matches.sort(key=lambda pair: pair[0], reverse=True)
-    best_score = matches[0][0]
-    best = [item for score, item in matches if score == best_score]
-    if len(best) == 1:
-        return best[0]
-    old_rect = previous.get("rect", [])
-    if len(old_rect) != 4:
-        return None
-    old_x = (int(old_rect[0]) + int(old_rect[2])) // 2
-    old_y = (int(old_rect[1]) + int(old_rect[3])) // 2
-    bounded = [item for item in best if len(item.get("rect", [])) == 4]
-    if not bounded:
-        return None
-    return min(bounded, key=lambda item: (
-        ((int(item["rect"][0]) + int(item["rect"][2])) // 2 - old_x) ** 2
-        + ((int(item["rect"][1]) + int(item["rect"][3])) // 2 - old_y) ** 2))
+    if len(rect) != 4:
+        return {"status": "error", "code": "invalid_ref", "message": "ref 缺少有效矩形"}
+    left, top, right, bottom = (int(value) for value in rect)
+    x, y = _point(context, {"x": (left + right) // 2, "y": (top + bottom) // 2})
+    return _parse_result(await computer_mouse_click({
+        "x": x, "y": y, "button": "left"}))
 
 
 def _activate_for_keyboard(context: WindowContext) -> bool:
@@ -555,19 +473,6 @@ async def _select_all() -> dict[str, Any]:
     return _parse_result(await computer_keyboard_press({"key": "a", "modifiers": ["ctrl"]}))
 
 
-def _selection_matches(elements: list[dict[str, Any]], target: str) -> bool:
-    wanted = target.casefold()
-    for item in elements:
-        value = str(item.get("value", "")).strip().casefold()
-        name = str(item.get("name", "")).strip().casefold()
-        role = str(item.get("role", ""))
-        if value == wanted and role in ("Edit", "ComboBox", "DataItem"):
-            return True
-        if item.get("selected") and (name == wanted or value == wanted):
-            return True
-    return False
-
-
 def _active_office_application():
     try:
         import comtypes.client
@@ -593,18 +498,11 @@ def _office_selection_address() -> str:
 
 
 async def _verify_spreadsheet_selection(context: WindowContext, target: str) -> bool:
+    """Verify spreadsheet selection via Office COM (no UIA)."""
     if _office_selection_address() == target.upper():
         return True
-    await asyncio.sleep(0.15)
-    try:
-        result = observe(hex(context.hwnd), "interactive", MAX_ELEMENTS)
-        elements = _window_elements(context.info(), result.get("elements", []))
-        if _selection_matches(elements, target):
-            context.elements = elements
-            return True
-    except Exception:
-        pass
-    return False
+    await asyncio.sleep(0.3)
+    return _office_selection_address() == target.upper()
 
 
 async def _save_as(context: WindowContext, action: dict[str, Any]) -> dict[str, Any]:
@@ -641,23 +539,13 @@ async def _save_as(context: WindowContext, action: dict[str, Any]) -> dict[str, 
                 context.hwnd = foreground
         except (ValueError, OSError):
             pass
-    try:
-        elements = _window_elements(context.info(), observe(
-            hex(context.hwnd), "interactive", MAX_ELEMENTS).get("elements", []))
-    except Exception as exc:
-        return {"status": "error", "code": "save_dialog_unavailable", "message": str(exc)[:160]}
-    editor = next((item for item in elements if item.get("role") in ("Edit", "ComboBox")
-                   and any(token in str(item.get("name", "")).casefold()
-                           for token in ("文件名", "file name", "filename"))), None)
-    editor = editor or next((item for item in elements
-                             if item.get("role") in ("Edit", "ComboBox") and item.get("focused")), None)
-    if not editor:
-        return {"status": "error", "code": "save_filename_not_found",
-                "message": "保存界面未暴露文件名输入框"}
-    entered = _parse_result(await uia_act({"ref": editor["ref"], "action": "set_value",
-                                           "value": str(destination), "verify": True}))
-    if entered.get("status") != "ok":
-        return entered
+    # Type the full path via keyboard (no UIA dialog handling).
+    await computer_keyboard_press({"key": "a", "modifiers": ["ctrl"]})
+    await asyncio.sleep(0.1)
+    type_result = _parse_result(await computer_keyboard_type({
+        "text": str(destination), "interval": 0.01}))
+    if type_result.get("status") != "ok":
+        return type_result
     submitted = _parse_result(await computer_keyboard_press({"key": "enter", "modifiers": []}))
     if submitted.get("status") != "ok":
         return submitted
@@ -675,25 +563,6 @@ async def _execute(context: WindowContext, action: dict[str, Any]) -> dict[str, 
     kind = action.get("type")
     if kind == "click_ref":
         return await _click_ref(context, str(action.get("ref", "")))
-    if kind == "click_text":
-        ref = str(action.get("ref", ""))
-        if ref:
-            return await _click_ref(context, ref)
-        text = str(action.get("text", ""))
-        if not text.strip():
-            return {"status": "error", "code": "missing_text",
-                    "message": "click_text 必须提供非空 text，或改用 click_ref"}
-        matches = [item for item in context.elements if text.casefold() in str(item.get("name", "")).casefold()]
-        if matches and str(matches[0].get("ref", "")).startswith("e"):
-            return await _click_ref(context, str(matches[0]["ref"]))
-        result = find_text(hex(context.hwnd), text, bool(action.get("exact", False)), 20)
-        candidates = [item for item in result.get("matches", []) if float(item.get("confidence", 0)) >= OCR_MIN_CONFIDENCE]
-        index = int(action.get("index", 0))
-        if index < 0 or index >= len(candidates):
-            return {"status": "error", "code": "text_not_found", "message": f"OCR 未可靠找到文字：{text}"}
-        left, top, right, bottom = candidates[index]["rect"]
-        x, y = _point(context, {"x": (left + right) // 2, "y": (top + bottom) // 2})
-        return _parse_result(await computer_mouse_click({"x": x, "y": y, "button": "left"}))
     if kind in ("click_point", "double_click", "right_click", "middle_click"):
         x, y = _point(context, action)
         button = {"right_click": "right", "middle_click": "middle"}.get(kind, "left")
@@ -733,19 +602,7 @@ async def _execute(context: WindowContext, action: dict[str, Any]) -> dict[str, 
         if opened.get("status") != "ok":
             return opened
         await asyncio.sleep(0.2)
-        dialog_elements: list[dict[str, Any]] = []
-        try:
-            dialog_elements = _window_elements(context.info(), observe(
-                hex(context.hwnd), "interactive", MAX_ELEMENTS).get("elements", []))
-        except Exception:
-            pass
-        editor = next((item for item in dialog_elements
-                       if item.get("role") in ("Edit", "ComboBox") and item.get("focused")), None)
-        if editor:
-            typed = _parse_result(await uia_act({"ref": editor["ref"], "action": "set_value",
-                                                 "value": target, "verify": True}))
-        else:
-            typed = _parse_result(await computer_keyboard_type({"text": target, "interval": 0.01}))
+        typed = _parse_result(await computer_keyboard_type({"text": target, "interval": 0.01}))
         if typed.get("status") != "ok":
             return typed
         submitted = _parse_result(await computer_keyboard_press({"key": "enter", "modifiers": []}))
@@ -753,23 +610,16 @@ async def _execute(context: WindowContext, action: dict[str, Any]) -> dict[str, 
             return submitted
         if not await _verify_spreadsheet_selection(context, target):
             return {"status": "error", "code": "selection_not_verified",
-                    "message": f"已执行定位，但无法确认当前选区为 {target}"}
+                    "message": f"已执行定位，但无法确认当前选区 {target}"}
         return {"status": "ok", "action": kind, "cell" if kind == "select_cell" else "range": target,
                 "method": "spreadsheet_go_to", "selected": True}
     if kind == "save_as":
         return await _save_as(context, action)
     if kind == "type":
-        target_ref = str(action.get("_target_ref") or context.focused_ref or "")
-        if target_ref:
-            result = _parse_result(await uia_act({"ref": target_ref, "action": "set_value",
-                                                  "value": str(action.get("text", "")), "verify": True}))
-            if result.get("status") == "ok":
-                result["method"] = "uia_value"
-                return result
         if not _activate_for_keyboard(context):
             return {"status": "error", "code": "focus_denied",
                     "message": "目标窗口不是前台窗口，已拒绝键盘注入"}
-        if target_ref and action.get("replace", True):
+        if action.get("replace", True):
             selected = await _select_all()
             if selected.get("status") != "ok":
                 return selected
