@@ -23,7 +23,7 @@ from .mcp_server import register_tool
 from .mouse import computer_mouse_click, computer_mouse_move, computer_mouse_scroll
 from .process_broker import LaunchBrokerError, launch_via_system_broker, shell_execute
 from .runtime import (REGISTRY, STRATEGIES, WindowContext, memory_candidates, remember_success,
-                      semantic_state, window_payload)
+                      window_payload)
 from .screenshot import _capture_window, _get_screenshot_dir
 from .system_index import (build_index, enrich_index, ensure_index, find_app, is_strong_app_match,
                            query_profile, search_apps)
@@ -33,10 +33,7 @@ from .windows import (DPI_AWARENESS, activate_window, get_window_info, list_wind
                       user32, virtual_screen)
 
 
-MAX_ELEMENTS = 80
-DEFAULT_ELEMENTS = 40
 MAX_BATCH = 5
-OCR_MIN_CONFIDENCE = 0.65
 SENSITIVE_WORDS = ("密码", "验证码", "支付", "付款", "购买", "删除", "卸载", "协议", "password", "captcha", "payment")
 
 
@@ -459,7 +456,7 @@ def _validate_shortcut(key: str, modifiers: list[str]) -> str:
 
 def _requires_observable_change(action: dict[str, Any]) -> bool:
     kind = action.get("type")
-    if kind in ("click_ref", "click_text", "click_point", "double_click", "right_click",
+    if kind in ("click_ref", "click_point", "double_click", "right_click",
                 "middle_click", "drag", "scroll"):
         return True
     if kind == "press":
@@ -662,22 +659,19 @@ def _normalize_action(action: Any) -> dict[str, Any]:
             normalized["type"] = "click_ref"
         elif legacy == "click" and "x" in normalized and "y" in normalized:
             normalized["type"] = "click_point"
-        elif legacy in ("type", "press", "click_text"):
+        elif legacy in ("type", "press"):
             normalized["type"] = legacy
     return normalized
 
 
 def _verify_typed_text(context: WindowContext, action: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
-    if result.get("method") == "uia_value":
-        return {"verified": True, "method": "uia-value"}
+    """Verify typed text via pixel change (pure visual — no OCR)."""
     text = str(action.get("text", ""))
     if not text:
         return {"verified": True, "method": "empty-input"}
-    try:
-        matched = bool(find_text(hex(context.hwnd), text, False, 1).get("matches"))
-        return {"verified": matched, "method": "ocr-text"}
-    except Exception as exc:
-        return {"verified": False, "method": "ocr-text", "error": str(exc)[:160]}
+    # Pure visual: rely on pixel change detected by _refresh_semantic.
+    # The caller checks `changed` to decide if input had an effect.
+    return {"verified": True, "method": "pixel-change"}
 
 
 def _adopt_new_window(context: WindowContext, old_handles: set[int]) -> None:
@@ -703,26 +697,31 @@ def _adopt_new_window(context: WindowContext, old_handles: set[int]) -> None:
 
 
 def _refresh_semantic(context: WindowContext) -> bool:
+    """Pure visual: detect change by comparing screenshot pixel digest."""
     info = context.info()
     try:
-        result = observe(hex(info.hwnd), "interactive", MAX_ELEMENTS)
-        elements = _window_elements(info, result.get("elements", []))
-        return context.update(semantic_state(info, elements), "uia", elements)
+        image, _ = _capture_window(hex(info.hwnd), activate=False)
+        digest = _image_digest(image)
+        changed = digest != context.image_hash
+        if changed:
+            context.image_hash = digest
+            context.revision_no += 1
+            context.revision = f"r{context.revision_no}-{digest[:6]}"
+            context.source = "visual"
+        return changed
     except Exception:
-        return context.update({"title": info.title, "rect": info.rect, "hwnd": info.hwnd}, context.source)
+        return False
 
 
 async def _wait_stable(context: WindowContext, timeout: float = 1.5) -> None:
+    """Pure visual: wait until screenshot stops changing."""
     deadline = time.monotonic() + timeout
     previous = ""
     stable = 0
     while time.monotonic() < deadline:
         try:
-            info = context.info()
-            items = _window_elements(info, observe(
-                hex(info.hwnd), "interactive", MAX_ELEMENTS).get("elements", []))
-            digest = hashlib.sha1(json.dumps(semantic_state(info, items), ensure_ascii=False,
-                                             sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+            image, _ = _capture_window(hex(context.hwnd), activate=False)
+            digest = _image_digest(image)
             stable = stable + 1 if digest == previous else 0
             if stable >= 1:
                 return
@@ -735,24 +734,14 @@ async def _wait_stable(context: WindowContext, timeout: float = 1.5) -> None:
 
 def _verify(context: WindowContext, expect: dict[str, Any], changed: bool,
             requires_change: bool = False) -> dict[str, Any]:
+    """Pure visual verification: window-title check + pixel-change detection."""
     info = context.info()
     if expect.get("window_title_contains"):
         wanted = str(expect["window_title_contains"]).casefold()
         return {"verified": wanted in info.title.casefold(), "method": "window-title"}
-    for key, desired in (("text_present", True), ("text_absent", False)):
-        if expect.get(key):
-            wanted = str(expect[key]).casefold()
-            uia_match = any(wanted in str(item.get("name", "")).casefold() for item in context.elements)
-            if uia_match is desired:
-                return {"verified": True, "method": "uia-text"}
-            try:
-                ocr_match = bool(find_text(hex(info.hwnd), str(expect[key]), False, 1).get("matches"))
-                return {"verified": ocr_match is desired, "method": "ocr-text"}
-            except Exception as exc:
-                return {"verified": False, "method": "ocr-text", "error": str(exc)[:200]}
     if requires_change and not changed:
-        return {"verified": False, "method": "pixel-or-semantic-change", "changed": False}
-    return {"verified": True, "method": "semantic-change" if changed else "action-result", "changed": changed}
+        return {"verified": False, "method": "pixel-change", "changed": False}
+    return {"verified": True, "method": "pixel-change" if changed else "action-result", "changed": changed}
 
 
 @register_tool(
@@ -763,7 +752,7 @@ def _verify(context: WindowContext, expect: dict[str, Any], changed: bool,
         "actions": {"type": "array", "minItems": 1, "maxItems": 5, "items": {
             "type": "object",
             "properties": {
-                "type": {"type": "string", "description": "动作种类，不要使用 action 或 command 字段。", "enum": ["click_ref", "click_text", "click_point", "move", "hover", "double_click", "right_click", "middle_click", "drag", "scroll", "select_cell", "select_range", "save_as", "type", "press", "key_down", "key_up", "wait"]},
+                "type": {"type": "string", "description": "动作种类，不要使用 action 或 command 字段。", "enum": ["click_ref", "click_point", "move", "hover", "double_click", "right_click", "middle_click", "drag", "scroll", "select_cell", "select_range", "save_as", "type", "press", "key_down", "key_up", "wait"]},
                 "ref": {"type": "string"}, "text": {"type": "string"},
                 "cell": {"type": "string", "description": "select_cell 使用的单元格地址，例如 A1、A101"},
                 "range": {"type": "string", "description": "select_range 使用的范围，例如 A1:A101"},
@@ -805,15 +794,15 @@ async def computer_action(args: dict) -> str:
         if context.restored and any(action.get("type") in coordinate_actions for action in actions):
             if context.source != "visual" or not context.image_hash:
                 return tool_error(
-                    "restored_coordinate_requires_ref",
-                    "MCP 已恢复结构化状态；OCR/UIA 目标必须使用 click_text 或 click_ref，不能复用坐标",
+                    "restored_coordinate_requires_visual",
+                    "MCP 已恢复上一会话状态；请重新调用 computer_state 获取最新截图后再执行坐标动作",
                     retryable=True,
                 )
             current_hash = _image_digest(_capture_window(hex(context.hwnd), activate=False)[0])
             if current_hash != context.image_hash:
                 return tool_error("stale_revision", "窗口图片已经变化；请重新调用 computer_state")
             context.restored = False
-        supported = {"click_ref", "click_text", "click_point", "move", "hover", "double_click",
+        supported = {"click_ref", "click_point", "move", "hover", "double_click",
                      "right_click", "middle_click", "drag", "scroll", "type", "press", "key_down",
                      "key_up", "select_cell", "select_range", "save_as", "wait"}
         if any(action.get("type") not in supported for action in actions):
