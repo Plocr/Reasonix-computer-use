@@ -20,9 +20,9 @@ computer_app(launch, query="应用名")
 - 打开已有文件使用 `computer_app(operation="open_file", path="绝对路径", query="可选应用名")`；禁止把文件名、桌面或目录名作为应用启动。
 - 保存 launch 返回的 `window_id`。聚焦和关闭时直接复用，不要为了找回窗口调用 `list_running`。
 - 禁止转用 Bash 或 PowerShell 全盘查找应用。
-- `computer_state` 已在内部按应用记忆、UIA、本地 OCR、窗口图片排序。不要自行调用图片理解工具。
-- `source=uia` 使用 `click_ref`；`source=ocr` 使用带完整 `text` 的 `click_text` 或直接使用 `click_ref`；只有 `source=visual` 才使用当前 revision 的 `click_point`。
-- OCR 返回的 `o*` 短引用可以直接交给 `click_ref`。`click_text` 必须传返回元素的完整 `name`，禁止只传 `ref`、空文字，或把 OCR `rect` 改成 `click_point`。
+- `computer_state` 返回应用记忆或当前窗口截图。Agent 基于截图识别元素并决定操作。
+- `source=visual` 时使用 `click_point`（窗口内坐标）或 `click_ref`（基于 Agent 自己标注的 ref）。
+- 截图坐标默认是窗口内物理像素，`click_point` 使用 `coordinate_space=window`。
 - `actions[]` 的动作名字段固定为 `type`，不是 `action` 或 `command`。示例：`{"type":"click_ref","ref":"e1"}`、`{"type":"type","text":"周杰伦"}`、`{"type":"press","keys":["ENTER"]}`。
 - 浏览器地址导航使用同一批次的 `{"type":"press","keys":["CTRL","L"]}`、`type(URL)`、`ENTER`；也兼容 `keys:["CTRL+L"]`。不得点击网页搜索框代替地址栏。
 - 页面内搜索连续受阻时，允许合成同一站点的 `/search?...`、`/s?wd=...` 等结果页 URL 完成目标；必须校验域名与结果，网页 DOM 可用时仍优先交给 `chrome-devtools`。
@@ -31,7 +31,7 @@ computer_app(launch, query="应用名")
 - Excel/WPS 首次保存到指定位置使用 `save_as(path="绝对路径")`；路径从 `computer_system(profile)` 的 Known Folder 获取。只有返回 `verified:true` 且文件实际出现才算保存成功。
 - 连续数据优先一次粘贴制表符/换行文本。计算器可在一次 `type` 中键入完整的 `1+2+...+100` 表达式，不需要逐个鼠标点击。
 - 用户明确指定某个应用作为处理步骤时，不得静默改用 Python、公式或 CLI。应用名称未命中时先搜索同类软件和 StartApps；仍不可用才说明并请求用户决定。用户只要求结果、未指定方法时才可主动切换 CLI。
-- `computer_state` 的 UIA、OCR矩形和视觉图片全部使用窗口内物理像素；`click_point` 默认 `coordinate_space=window`。屏幕绝对坐标必须显式声明 `coordinate_space=screen`，不要自行按 DPI 缩放或叠加窗口原点。
+- `computer_state` 返回的截图使用窗口内物理像素；`click_point` 默认 `coordinate_space=window`。屏幕绝对坐标必须显式声明 `coordinate_space=screen`，不要自行按 DPI 缩放或叠加窗口原点。
 - 确定的输入、按键和点击合并到一次 `computer_action`，最多五步。执行器会验证并在失败处停止。
 - `unchanged=true` 时不要重复观察或截图。`repeat_blocked` 时必须换策略或请求用户介入。
 - 任一响应 `blocked=true` 时立即停止工具循环并报告最小阻断，不得转用 Shell、浏览器或新会话重复同一目标。
