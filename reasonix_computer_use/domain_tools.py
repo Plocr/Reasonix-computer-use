@@ -276,15 +276,10 @@ async def computer_app(args: dict) -> str:
             if mode == "process":
                 if not args.get("confirmed"):
                     return tool_error("confirmation_required", "结束目标应用后台进程需要 confirmed=true")
-                handle = ctypes.windll.kernel32.OpenProcess(0x0001, False, info.pid)
-                if not handle:
-                    raise ctypes.WinError()
-                try:
-                    if not ctypes.windll.kernel32.TerminateProcess(handle, 0):
-                        raise ctypes.WinError()
-                finally:
-                    ctypes.windll.kernel32.CloseHandle(handle)
-                return _ok(closed="process", pid=info.pid, app=context.app_name or info.title)
+                from .process_backend import kill_process
+                if kill_process(info.pid):
+                    return _ok(closed="process", pid=info.pid, app=context.app_name or info.title)
+                return tool_error("kill_failed", f"无法结束进程 PID={info.pid}")
             user32.PostMessageW(info.hwnd, 0x0010, 0, 0)
             return _ok(closed="window", app=context.app_name or info.title)
         return tool_error("invalid_operation", f"不支持的应用操作：{operation}")
@@ -433,7 +428,17 @@ def _activate_for_keyboard(context: WindowContext) -> bool:
         activate_window(context.hwnd)
     except OSError:
         pass
-    return user32.GetForegroundWindow() == context.hwnd
+    # Cross-platform: check if our window is focused
+    foreground = _get_foreground_window_id()
+    return foreground == context.hwnd
+
+
+def _get_foreground_window_id() -> int:
+    """Get the currently focused window ID (cross-platform)."""
+    if IS_WINDOWS:
+        return user32.GetForegroundWindow()
+    # macOS/Linux: return 0 (can't easily get window ID without platform-specific code)
+    return 0
 
 
 def _press_parts(keys: Any) -> tuple[str, list[str]]:
@@ -574,14 +579,22 @@ async def _execute(context: WindowContext, action: dict[str, Any]) -> dict[str, 
                                             "relative": action.get("relative", False)})
         end_x, end_y = _point(context, {"x": action["to_x"], "y": action["to_y"],
                                         "relative": action.get("relative", False)})
-        user32.SetCursorPos(start_x, start_y)
-        user32.mouse_event(0x0002, 0, 0, 0, 0)
+        # Cross-platform drag via pynput
+        from .platform_backend import get_mouse
+        mouse = get_mouse()
+        mouse.move(start_x, start_y)
+        import time
+        time.sleep(0.05)
+        # pynput doesn't have drag, so we press and move
+        from pynput.mouse import Button
+        mouse._controller.press(Button.left)
         steps = max(2, min(int(action.get("steps", 10)), 30))
         for step in range(1, steps + 1):
-            user32.SetCursorPos(start_x + (end_x - start_x) * step // steps,
-                                start_y + (end_y - start_y) * step // steps)
+            intermediate_x = start_x + (end_x - start_x) * step // steps
+            intermediate_y = start_y + (end_y - start_y) * step // steps
+            mouse.move(intermediate_x, intermediate_y)
             await asyncio.sleep(0.02)
-        user32.mouse_event(0x0004, 0, 0, 0, 0)
+        mouse._controller.release(Button.left)
         return {"status": "ok", "action": "drag"}
     if kind == "scroll":
         amount = int(action.get("amount", 3))
@@ -683,7 +696,7 @@ def _verify_typed_text(context: WindowContext, action: dict[str, Any], result: d
 
 
 def _adopt_new_window(context: WindowContext, old_handles: set[int]) -> None:
-    foreground = user32.GetForegroundWindow()
+    foreground = _get_foreground_window_id()
     if foreground and foreground not in old_handles:
         try:
             info = get_window_info(foreground)

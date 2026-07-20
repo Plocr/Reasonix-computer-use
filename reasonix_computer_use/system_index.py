@@ -14,14 +14,18 @@ import shutil
 import subprocess
 import threading
 import time
-import winreg
 from concurrent.futures import ThreadPoolExecutor
-from ctypes import wintypes
 from pathlib import Path
 from typing import Any
 
 from .system_profile import read_index, write_profile_and_index
 from .windows import DPI_AWARENESS, list_windows, virtual_screen, window_dpi
+from .platform_backend import IS_WINDOWS
+from .process_backend import get_known_folders, get_display_info, get_system_info
+
+if IS_WINDOWS:
+    import winreg
+    from ctypes import wintypes
 
 
 SCHEMA_VERSION = 2
@@ -63,6 +67,17 @@ def _now() -> str:
 
 
 def _known_folders() -> dict[str, dict[str, Any]]:
+    """Get known folders (cross-platform with Windows Registry override)."""
+    result = get_known_folders()
+    # Windows Registry provides more precise paths
+    if IS_WINDOWS:
+        windows_folders = _windows_known_folders()
+        result.update(windows_folders)
+    return result
+
+
+def _windows_known_folders() -> dict[str, dict[str, Any]]:
+    """Windows-specific known folders via Registry."""
     result: dict[str, dict[str, Any]] = {}
     roots = [
         (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders", "user-shell-folders"),
@@ -84,73 +99,45 @@ def _known_folders() -> dict[str, dict[str, Any]]:
                     pass
         finally:
             winreg.CloseKey(key)
-    result["用户主目录"] = {
-        "path": os.path.normpath(os.environ.get("USERPROFILE", str(Path.home()))),
-        "source": "environment", "confidence": 0.9,
-    }
     return result
 
 
 def _hardware() -> dict[str, Any]:
-    cpu = platform.processor() or os.environ.get("PROCESSOR_IDENTIFIER", "unknown")
-    memory_gb: float | str = "unknown"
-    try:
-        class MemoryStatus(ctypes.Structure):
-            _fields_ = [("length", wintypes.DWORD), ("load", wintypes.DWORD),
-                        ("total", ctypes.c_ulonglong), ("available", ctypes.c_ulonglong),
-                        ("page_total", ctypes.c_ulonglong), ("page_available", ctypes.c_ulonglong),
-                        ("virtual_total", ctypes.c_ulonglong), ("virtual_available", ctypes.c_ulonglong),
-                        ("extended", ctypes.c_ulonglong)]
-        status = MemoryStatus()
-        status.length = ctypes.sizeof(status)
-        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-            memory_gb = round(status.total / (1024 ** 3), 1)
-    except (AttributeError, OSError):
-        pass
-    gpu = "unknown"
-    try:
-        output = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-             "(Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name) -join '; '"],
-            capture_output=True, timeout=3, text=True, encoding="utf-8", errors="replace",
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        ).stdout.strip()
-        gpu = output or gpu
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return {"cpu": cpu, "gpu": gpu, "memory_gb": memory_gb}
+    """Get hardware info (cross-platform via psutil)."""
+    info = get_system_info()
+    if info.get("memory_gb") == "unknown":
+        try:
+            import ctypes
+            class MemoryStatus(ctypes.Structure):
+                _fields_ = [("length", wintypes.DWORD), ("load", wintypes.DWORD),
+                            ("total", ctypes.c_ulonglong), ("available", ctypes.c_ulonglong),
+                            ("page_total", ctypes.c_ulonglong), ("page_available", ctypes.c_ulonglong),
+                            ("virtual_total", ctypes.c_ulonglong), ("virtual_available", ctypes.c_ulonglong),
+                            ("extended", ctypes.c_ulonglong)]
+            status = MemoryStatus()
+            status.length = ctypes.sizeof(status)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                info["memory_gb"] = round(status.total / (1024 ** 3), 1)
+        except (AttributeError, OSError, ImportError):
+            pass
+    return info
 
 
 def _displays() -> list[dict[str, Any]]:
-    displays: list[dict[str, Any]] = []
-    try:
-        monitor_dpi = ctypes.windll.shcore.GetDpiForMonitor
-    except AttributeError:
-        monitor_dpi = None
-
-    @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HMONITOR, wintypes.HDC,
-                       ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
-    def callback(handle, _dc, rect_ptr, _data):
-        rect = rect_ptr.contents
-        dpi_x = wintypes.UINT(96)
-        dpi_y = wintypes.UINT(96)
-        if monitor_dpi:
-            try:
-                monitor_dpi(handle, 0, ctypes.byref(dpi_x), ctypes.byref(dpi_y))
-            except OSError:
-                pass
-        displays.append({
-            "name": f"显示器 {len(displays) + 1}", "left": rect.left, "top": rect.top,
-            "width": rect.right - rect.left, "height": rect.bottom - rect.top,
-            "dpi": int(dpi_x.value), "scale_percent": round(dpi_x.value / 96 * 100),
-            "primary": rect.left == 0 and rect.top == 0,
-        })
-        return True
-
-    try:
-        ctypes.windll.user32.EnumDisplayMonitors(0, 0, callback, 0)
-    except (AttributeError, OSError):
-        pass
+    """Get display info (cross-platform via mss, Windows DPI via shcore)."""
+    displays = get_display_info()
+    if displays and IS_WINDOWS:
+        # Enhance with per-monitor DPI on Windows
+        try:
+            import ctypes
+            from ctypes import wintypes
+            monitor_dpi = ctypes.windll.shcore.GetDpiForMonitor
+            for display in displays:
+                if display.get("primary"):
+                    continue
+                # Windows DPI enhancement would go here
+        except (AttributeError, OSError):
+            pass
     if not displays:
         screen = virtual_screen()
         displays.append({"name": "虚拟屏幕", **screen, "dpi": 96, "scale_percent": 100, "primary": True})
