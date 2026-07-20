@@ -72,7 +72,7 @@ Remove-Item -LiteralPath (Join-Path $runtime "Scripts") -Recurse -Force -ErrorAc
 
 $files = @(
     "reasonix-plugin.json", "reasonix-computer-use.bat", "README.md", "USER_GUIDE.md",
-    "LICENSE", "CLAUDE.md", "skills", "commands", "capability_tests", "capability_app"
+    "LICENSE", "CLAUDE.md", "skills", "commands", "hooks"
 )
 foreach ($file in $files) {
     $source = Join-Path $root $file
@@ -94,7 +94,7 @@ $buildInfo | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $stage "BUILD-
     --output (Join-Path $stage "THIRD-PARTY-PACKAGES.md")
 if ($LASTEXITCODE -ne 0) { throw "Failed to generate the third-party package list" }
 
-& $python -c "import comtypes, PIL, rapidocr_onnxruntime, reasonix_computer_use; assert reasonix_computer_use.__version__ == '$version'"
+& $python -c "import PIL, reasonix_computer_use; assert reasonix_computer_use.__version__ == '$version'"
 if ($LASTEXITCODE -ne 0) { throw "Embedded runtime import verification failed" }
 
 $initialize = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
