@@ -1,7 +1,7 @@
 {
   "name": "computer-use",
   "version": "0.8.0-beta.1",
-  "description": "Reasonix-native Windows computer use with system index, UIA, local OCR and visual fallback",
+  "description": "Reasonix-native Windows computer use with pure visual perception, system index and screenshot-based interaction",
   "skills": "skills",
   "commands": ["commands"],
   "hooks": {

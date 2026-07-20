@@ -16,10 +16,8 @@ from typing import Any
 
 DEPENDENCIES = (
     "Pillow>=10.0.0",
-    "comtypes>=1.4.0",
-    "rapidocr-onnxruntime>=1.4.4",
 )
-MODULES = ("PIL", "comtypes", "rapidocr_onnxruntime")
+MODULES = ("PIL",)
 STALE_SETUP_SECONDS = 900
 _PROCESS_STARTED_AT = time.time()
 
@@ -105,7 +103,7 @@ def environment_status() -> dict[str, Any]:
     if status == "ready":
         restart_required = bool(updated and updated > _PROCESS_STARTED_AT)
         result.update({"restart_required": restart_required,
-                       "next_hint": ("新建 Reasonix 会话以加载 UIA/OCR 依赖"
+                       "next_hint": ("新建 Reasonix 会话以加载截图依赖"
                                      if restart_required else "环境已就绪，可以使用 Computer Use")})
     if status == "installing":
         result.update({"phase": state.get("phase", "pip_install"), "pid": state.get("pid"),

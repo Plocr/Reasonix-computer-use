@@ -1010,9 +1010,7 @@ async def computer_system(args: dict) -> str:
             return _ok(version=__version__, platform_supported=os.name == "nt",
                        dpi_awareness=DPI_AWARENESS, virtual_screen=virtual_screen(),
                        displays=index.get("displays", []),
-                       uia_available=importlib.util.find_spec("comtypes") is not None,
-                       ocr_available=importlib.util.find_spec("rapidocr_onnxruntime") is not None,
-                       input_available=bool(user32), public_tools=4,
+                       perception="visual", input_available=bool(user32), public_tools=4,
                        environment=environment_status())
         if operation == "setup":
             result = start_environment_setup(bool(params.get("confirmed", False)))
