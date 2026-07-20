@@ -1,4 +1,4 @@
-# Reasonix Computer Use 0.8.0-alpha.13
+# Reasonix Computer Use 0.8.0-beta.1
 
 Reasonix 专用的 Windows Computer Use 插件。任务完成优先，低 token 为优化目标。
 
@@ -299,5 +299,5 @@ Shell 逃逸阻断。Windows full runner 还会创建并关闭一个 `KILL_ON_JO
 
 ## 当前范围
 
-0.8.0-alpha.13 只支持 Windows 10/11 x64。纯视觉架构（无 UIA/OCR 依赖）使未来向 macOS 和 Linux 迁移成为可能。
+0.8.0-beta.1 只支持 Windows 10/11 x64。纯视觉架构（无 UIA/OCR 依赖）使未来向 macOS 和 Linux 迁移成为可能。
 本次仅更新 Git 源码，未构建新的安装器；跨应用长链自治、主动巡检、语音无障碍和自动探索软件菜单不在本版本范围内。

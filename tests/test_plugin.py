@@ -44,10 +44,11 @@ def test_action_schema_exposes_canonical_type_and_coordinate_space():
 
 @pytest.mark.asyncio
 async def test_mcp_initialize_and_list_report_08():
+    from reasonix_computer_use import tools  # noqa: F401
     from reasonix_computer_use.mcp_server import handle_initialize, handle_tools_list
 
     initialized = await handle_initialize(1)
-    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-alpha.13"
+    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-beta.1"
     listed = await handle_tools_list(2)
     assert {tool["name"] for tool in listed["result"]["tools"]} == PUBLIC_TOOLS
 
@@ -800,7 +801,7 @@ async def test_file_write_requires_confirmation(tmp_path):
 def test_manifest_and_docs_reference_new_api():
     root = Path(__file__).resolve().parent.parent
     manifest = json.loads((root / "reasonix-plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.8.0-alpha.13"
+    assert manifest["version"] == "0.8.0-beta.1"
     assert manifest["commands"] == ["commands"]
     assert set(manifest["hooks"]) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"}
     routing = (root / "CLAUDE.md").read_text(encoding="utf-8")

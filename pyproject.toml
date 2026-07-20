@@ -1,6 +1,6 @@
 [project]
 name = "reasonix-computer-use"
-version = "0.8.0-alpha.13"
+version = "0.8.0-beta.1"
 description = "Reasonix-native Windows computer use with pure visual perception"
 requires-python = ">=3.10"
 dependencies = [
