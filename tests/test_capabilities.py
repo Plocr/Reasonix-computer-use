@@ -190,9 +190,9 @@ def test_trace_export_requires_existing_trace(monkeypatch, tmp_path):
 def test_replay_detects_stale_duplicate_and_unauthorized_fallback():
     from reasonix_computer_use.replay import replay_document
 
-    action = {"revision": "r0", "actions": [{"type": "click_ref", "ref": "e1"}]}
+    action = {"revision": "r0", "actions": [{"type": "click_point", "x": 100, "y": 200}]}
     document = {"trace_id": "SYNTHETIC", "events": [
-        {"event": "perception", "data": {"revision": "r1", "source": "uia"}},
+        {"event": "perception", "data": {"revision": "r1", "source": "visual"}},
         {"event": "action", "data": action},
         {"event": "action", "data": action},
         {"event": "fallback", "data": {"authorized": False}},

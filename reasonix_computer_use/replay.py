@@ -10,7 +10,7 @@ from typing import Any
 from .trace import read_trace
 
 
-STRATEGIES = {"memory": 0, "uia": 1, "ocr": 2, "visual": 3}
+STRATEGIES = {"memory": 0, "visual": 1}
 
 
 def replay_document(document: dict[str, Any]) -> dict[str, Any]:
@@ -68,10 +68,6 @@ def score_documents(documents: list[dict[str, Any]]) -> dict[str, Any]:
         calls = [item for item in events if item.get("event") in ("action", "perception", "window_revision")]
         visual = sum(1 for item in events if item.get("event") == "perception"
                      and item.get("data", {}).get("source") == "visual")
-        ocr = sum(1 for item in events if item.get("event") == "perception"
-                  and item.get("data", {}).get("source") == "ocr")
-        uia = sum(1 for item in events if item.get("event") == "perception"
-                  and item.get("data", {}).get("source") == "uia")
         action_events = [item for item in events if item.get("event") == "action"]
         misoperations = sum(1 for item in action_events
                             if item.get("data", {}).get("status") not in (None, "ok")
@@ -86,7 +82,7 @@ def score_documents(documents: list[dict[str, Any]]) -> dict[str, Any]:
         completed = terminal.get("data", {}).get("status") == "completed"
         elapsed = max(0.0, float(document.get("updated_at", 0)) - float(document.get("created_at", 0)))
         tasks.append({"completed": completed, "calls": len(calls), "visual": visual,
-                      "ocr": ocr, "uia": uia, "actions": len(action_events),
+                      "actions": len(action_events),
                       "misoperations": misoperations, "duplicates": duplicate,
                       "unauthorized": unauthorized, "interventions": interventions,
                       "trace_bytes": len(json.dumps(document, ensure_ascii=False,
@@ -101,8 +97,6 @@ def score_documents(documents: list[dict[str, Any]]) -> dict[str, Any]:
         "misoperation_rate": (sum(item["misoperations"] for item in tasks) /
                               sum(item["actions"] for item in tasks)) if sum(item["actions"] for item in tasks) else 0,
         "average_tool_calls": statistics.mean(item["calls"] for item in tasks) if tasks else 0,
-        "average_uia_calls": statistics.mean(item["uia"] for item in tasks) if tasks else 0,
-        "average_ocr_calls": statistics.mean(item["ocr"] for item in tasks) if tasks else 0,
         "average_visual_calls": statistics.mean(item["visual"] for item in tasks) if tasks else 0,
         "duplicate_actions": sum(item["duplicates"] for item in tasks),
         "user_interventions": sum(item["interventions"] for item in tasks),

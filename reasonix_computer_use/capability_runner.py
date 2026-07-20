@@ -34,9 +34,9 @@ def _synthetic_trace() -> dict[str, Any]:
         "schema_version": 1, "trace_id": "SYNTHETIC_TRACE", "created_at": 0, "updated_at": 0,
         "test_mode": True,
         "events": [
-            {"event": "perception", "data": {"revision": "r1", "source": "uia", "progress": True}},
-            {"event": "action", "data": {"revision": "r1", "actions": [{"type": "click_ref", "ref": "e1"}]}},
-            {"event": "perception", "data": {"revision": "r2", "source": "uia", "progress": True}},
+            {"event": "perception", "data": {"revision": "r1", "source": "visual", "progress": True}},
+            {"event": "action", "data": {"revision": "r1", "actions": [{"type": "click_point", "x": 100, "y": 200}]}},
+            {"event": "perception", "data": {"revision": "r2", "source": "visual", "progress": True}},
             {"event": "task_end", "data": {"status": "completed"}},
         ],
     }
