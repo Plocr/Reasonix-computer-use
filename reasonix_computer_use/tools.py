@@ -4,6 +4,7 @@ import importlib
 
 # Core modules required for pure-visual operation.
 from . import keyboard, mouse, screenshot, utils, windows  # noqa: F401
+from . import platform_backend, window_backend  # noqa: F401
 
 # Legacy modules (UIA/OCR) are optional. Import only if installed; their
 # MCP tool registrations are intentionally not loaded in the vision-only build.

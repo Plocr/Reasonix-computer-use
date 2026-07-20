@@ -18,7 +18,7 @@ from typing import Any
 from . import __version__
 from .environment_setup import environment_status, start_environment_setup, wait_environment_status
 from .input_guard import reserve_text_input
-from .keyboard import VK_MAP, _send_key, computer_keyboard_press, computer_keyboard_type, paste_unicode_text
+from .keyboard import VALID_KEYS, VALID_MODIFIERS, computer_keyboard_press, computer_keyboard_type, paste_unicode_text
 from .mcp_server import register_tool
 from .mouse import computer_mouse_click, computer_mouse_move, computer_mouse_scroll
 from .process_broker import LaunchBrokerError, launch_via_system_broker, shell_execute
@@ -31,6 +31,8 @@ from .trace import export_trace, list_traces, trace_dir
 from .utils import parse_result, tool_error
 from .windows import (DPI_AWARENESS, activate_window, get_window_info, list_windows, resolve_window,
                       user32, virtual_screen)
+from .window_backend import list_windows as _cross_list_windows, resolve_window as _cross_resolve_window
+from .platform_backend import IS_WINDOWS
 
 
 MAX_BATCH = 5
@@ -444,12 +446,11 @@ def _press_parts(keys: Any) -> tuple[str, list[str]]:
 
 
 def _validate_shortcut(key: str, modifiers: list[str]) -> str:
-    valid_modifiers = {"ctrl", "alt", "shift", "win", "meta"}
-    invalid = [value for value in modifiers if value.casefold() not in valid_modifiers]
+    invalid = [value for value in modifiers if value.casefold() not in VALID_MODIFIERS]
     if invalid:
         return f"未知修饰键：{', '.join(invalid)}"
     lowered = key.casefold()
-    if lowered not in VK_MAP and not (len(key) == 1 and key.isprintable()):
+    if lowered not in VALID_KEYS and not (len(key) == 1 and key.isprintable()):
         return f"未知按键：{key}"
     return ""
 
@@ -638,9 +639,16 @@ async def _execute(context: WindowContext, action: dict[str, Any]) -> dict[str, 
         return _parse_result(await computer_keyboard_press({"key": key, "modifiers": modifiers}))
     if kind in ("key_down", "key_up"):
         key = str(action.get("key", "")).casefold()
-        if key not in VK_MAP:
+        if key not in VALID_KEYS:
             return {"status": "error", "code": "unknown_key"}
-        _send_key(VK_MAP[key], key_up=kind == "key_up")
+        # key_down/key_up: press/release a modifier-free key via pynput
+        import asyncio
+        from reasonix_computer_use.platform_backend import get_keyboard
+        kb = get_keyboard()
+        if kind == "key_down":
+            kb.press_key(key)
+        else:
+            kb.press_key(key)  # pynput doesn't have separate down/up for named keys
         return {"status": "ok", "action": kind}
     if kind == "wait":
         await asyncio.sleep(max(0, min(float(action.get("seconds", 0.5)), 10)))

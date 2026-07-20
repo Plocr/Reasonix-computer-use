@@ -4,21 +4,22 @@
 - 默认保存到 memory/screenshots/（持久化）
 - 截图用于定位/验证，操作成功后由 PostToolUse 钩子自动清理
 - 操作失败时保留截图供调试
+
+跨平台支持：Windows/macOS/Linux via mss + pynput。
 """
 
 import json
 import os
 import time
-import ctypes
-import ctypes.wintypes
 import glob
 import uuid
 from reasonix_computer_use.mcp_server import register_tool
 from reasonix_computer_use.utils import parse_result
 from reasonix_computer_use.utils import tool_error
+from reasonix_computer_use.platform_backend import screenshot as _mss_grab, virtual_screen
 from reasonix_computer_use.windows import (
     DPI_AWARENESS, activate_window, get_window_rect, list_windows, resolve_window,
-    physical_pixel_context, virtual_screen, window_dpi,
+    physical_pixel_context, window_dpi,
 )
 
 
@@ -234,29 +235,25 @@ def _allowed_screenshot_path(path: str) -> bool:
 
 
 def _capture_window(window_id: str, activate: bool = True):
-    """按标题或 hwnd 截取指定窗口。"""
+    """按标题或 hwnd 截取指定窗口（跨平台 via mss）。"""
     info = resolve_window(window_id)
     if activate:
         try:
             activate_window(info.hwnd)
             time.sleep(0.2)
         except OSError:
-            # Foreground activation is advisory; observation may continue when
-            # Windows focus-stealing protection denies it.
             pass
     left, top, right, bottom = get_window_rect(info.hwnd)
     width, height = right - left, bottom - top
     if width <= 0 or height <= 0:
         raise ValueError("Window has an empty capture rectangle")
-    with physical_pixel_context():
-        screenshot = _grab_region(left, top, width, height)
+    screenshot = _grab_region(left, top, width, height)
     return screenshot, info
 
 
 def _grab_region(left: int, top: int, width: int, height: int):
-    from PIL import ImageGrab
-
-    return ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True)
+    """跨平台截图 via mss。"""
+    return _mss_grab((left, top, width, height))
 
 
 @register_tool(

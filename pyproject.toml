@@ -1,20 +1,19 @@
 [project]
 name = "reasonix-computer-use"
 version = "0.8.0-beta.1"
-description = "Reasonix-native Windows computer use with pure visual perception"
+description = "Reasonix-native computer use with pure visual perception (Windows/macOS/Linux)"
 requires-python = ">=3.10"
 dependencies = [
     "Pillow>=10.0.0",
+    "mss>=9.0.0",
+    "pynput>=1.7.7",
+    "psutil>=5.9.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
-]
-legacy = [
-    "comtypes>=1.4.0",
-    "rapidocr-onnxruntime>=1.4.4",
 ]
 
 [build-system]

@@ -192,5 +192,6 @@ Beta.1 当前包含 85 项自动测试，覆盖动作 schema、物理坐标、re
 
 ## 当前范围
 
-0.8.0-beta.1 只支持 Windows 10/11 x64。纯视觉架构（无 UIA/OCR 依赖）使未来向 macOS 和 Linux 迁移成为可能。
+0.8.0-beta.1 主要支持 Windows 10/11 x64。纯视觉架构（无 UIA/OCR 依赖）使向 macOS 和 Linux 迁移成为可能。
+跨平台支持（Windows/macOS/Linux）正在开发中，当前 Windows 功能最完善。
 跨应用长链自治、主动巡检、语音无障碍和自动探索软件菜单不在本版本范围内。
