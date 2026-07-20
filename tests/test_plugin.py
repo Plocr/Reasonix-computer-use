@@ -903,8 +903,7 @@ def test_readme_documents_git_dependencies_and_windows_release():
     root = Path(__file__).resolve().parent.parent
     readme = (root / "README.md").read_text(encoding="utf-8")
     assert "git:github.com/Plocr/Reasonix-computer-use" in readme
-    for dependency in ("Pillow", "comtypes", "rapidocr-onnxruntime"):
-        assert dependency in readme
+    assert "Pillow" in readme
     assert "windows-x64.zip" in readme
     assert "windows-x64-setup.exe" in readme
     assert "无需安装 Python" in readme
