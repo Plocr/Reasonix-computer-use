@@ -2,9 +2,20 @@
 
 import importlib
 
-# Import legacy modules as internal capabilities, then remove their public
-# registrations. domain_tools is imported last and owns the public API.
-from . import keyboard, mouse, screenshot, text_vision, ui_tree, utils, windows  # noqa: F401
+# Core modules required for pure-visual operation.
+from . import keyboard, mouse, screenshot, utils, windows  # noqa: F401
+
+# Legacy modules (UIA/OCR) are optional. Import only if installed; their
+# MCP tool registrations are intentionally not loaded in the vision-only build.
+try:
+    from . import ui_tree  # noqa: F401
+except ImportError:
+    pass
+try:
+    from . import text_vision  # noqa: F401
+except ImportError:
+    pass
+
 from .mcp_server import TOOLS
 
 TOOLS.clear()

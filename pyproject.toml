@@ -1,18 +1,20 @@
 [project]
 name = "reasonix-computer-use"
-version = "0.8.0-alpha.12"
-description = "Reasonix-native Windows computer use with UIA, local OCR and visual fallback"
+version = "0.8.0-alpha.13"
+description = "Reasonix-native Windows computer use with pure visual perception"
 requires-python = ">=3.10"
 dependencies = [
     "Pillow>=10.0.0",
-    "comtypes>=1.4.0",
-    "rapidocr-onnxruntime>=1.4.4",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+]
+legacy = [
+    "comtypes>=1.4.0",
+    "rapidocr-onnxruntime>=1.4.4",
 ]
 
 [build-system]
