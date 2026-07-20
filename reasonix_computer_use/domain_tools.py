@@ -117,13 +117,9 @@ def _launch(app: dict[str, Any]) -> tuple[int, str]:
 
 
 def _prime_window_state(context: WindowContext, info) -> None:
-    """Warm the target UIA provider during launch without returning its tree."""
-    try:
-        result = observe(hex(info.hwnd), "interactive", MAX_ELEMENTS)
-        elements = _window_elements(info, result.get("elements", []))
-        context.update(semantic_state(info, elements), "uia", elements)
-    except Exception:
-        context.update({"title": info.title, "rect": info.rect, "hwnd": info.hwnd}, "window")
+    """Initialize window context state after launch (visual-only, no UIA warmup)."""
+    context.update({"title": info.title, "rect": info.rect, "hwnd": info.hwnd,
+                    "pid": info.pid, "path": info.process_path}, "window")
 
 
 @register_tool(
@@ -309,52 +305,8 @@ async def computer_app(args: dict) -> str:
         return tool_error("app_operation_failed", str(exc), retryable=True)
 
 
-def _goal_terms(goal: str) -> list[str]:
-    value = re.sub(r"[，。,.!?;；:：()（）]", " ", goal).strip().casefold()
-    terms = [part for part in value.split() if len(part) > 1]
-    for prefix in ("打开", "点击", "进入", "查看", "选择", "切换", "关闭", "找到"):
-        if value.startswith(prefix) and len(value) > len(prefix):
-            terms.append(value[len(prefix):])
-    return list(dict.fromkeys(terms))[:8]
-
-
-def _relevant(items: list[dict[str, Any]], goal: str, limit: int) -> list[dict[str, Any]]:
-    matches = _goal_matches(items, goal)
-    return [_bounded_element(item) for item in (matches or items)[:limit]]
-
-
-def _goal_matches(items: list[dict[str, Any]], goal: str) -> list[dict[str, Any]]:
-    terms = _goal_terms(goal)
-    if not terms:
-        return list(items)
-    matches = []
-    for item in items:
-        text = " ".join(str(item.get(key, "")) for key in ("name", "value", "text")).casefold()
-        if any(term in text or text in term for term in terms if text):
-            matches.append(item)
-    return matches
-
-
-def _spreadsheet_hint(info, goal: str) -> dict[str, Any]:
-    text = f"{info.title} {goal}".casefold()
-    if info.class_name in ("OpusApp", "XLMAIN") and any(value in text for value in
-                                                         ("表格", "单元格", ".xlsx", ".xls", "范围", "a1")):
-        hint: dict[str, Any] = {
-            "available_actions": ["select_cell", "select_range"],
-            "selection_rule": "先用 select_cell/select_range 定位，并在动作结果中确认 selected=true；禁止按 F5 或猜网格坐标",
-        }
-        range_match = re.search(r"\b([A-Z]{1,3}[1-9][0-9]{0,6}:[A-Z]{1,3}[1-9][0-9]{0,6})\b", goal.upper())
-        cell_match = re.search(r"\b([A-Z]{1,3}[1-9][0-9]{0,6})\b", goal.upper())
-        if range_match:
-            hint["recommended_action"] = {"type": "select_range", "range": range_match.group(1)}
-        elif cell_match:
-            hint["recommended_action"] = {"type": "select_cell", "cell": cell_match.group(1)}
-        return hint
-    return {}
-
-
 def _bounded_element(item: dict[str, Any]) -> dict[str, Any]:
-    allowed = ("ref", "role", "name", "value", "rect", "actions", "id", "class", "confidence",
+    allowed = ("ref", "role", "name", "value", "rect", "actions", "id", "class",
                "action", "focused", "selected", "coordinate_space")
     result = {key: item.get(key) for key in allowed if item.get(key) not in (None, "", [])}
     for key, maximum in (("name", 120), ("value", 120), ("id", 80), ("class", 80)):
@@ -364,37 +316,6 @@ def _bounded_element(item: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _window_elements(info, elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert UIA screen rectangles to the public window-local pixel space."""
-    origin_x, origin_y = info.rect[0], info.rect[1]
-    normalized = []
-    for element in elements:
-        item = dict(element)
-        rect = item.get("rect")
-        if isinstance(rect, (list, tuple)) and len(rect) == 4:
-            if item.get("coordinate_space") != "window":
-                left, top, right, bottom = (int(value) for value in rect)
-                item["rect"] = [left - origin_x, top - origin_y,
-                                right - origin_x, bottom - origin_y]
-            else:
-                item["rect"] = [int(value) for value in rect]
-            item["coordinate_space"] = "window"
-        normalized.append(item)
-    return normalized
-
-
-def _ocr_elements(window_id: str, goal: str, limit: int) -> list[dict[str, Any]]:
-    scanned = scan_text(window_id, 200)
-    items = []
-    for match in scanned.get("matches", []):
-        if float(match.get("confidence", 0)) < OCR_MIN_CONFIDENCE:
-            continue
-        items.append({"ref": f"o{len(items) + 1}", "role": "text", "name": str(match.get("text", ""))[:120],
-                      "rect": match.get("rect"), "confidence": match.get("confidence"), "action": "click",
-                      "coordinate_space": "window"})
-    return _relevant(items, goal, limit)
-
-
 def _image_digest(image) -> str:
     small = image.convert("L").resize((32, 32))
     return hashlib.sha1(small.tobytes()).hexdigest()
@@ -402,13 +323,13 @@ def _image_digest(image) -> str:
 
 @register_tool(
     name="computer_state",
-    description="观察一个 Windows 窗口。固定按应用记忆、UIA、本地 OCR、窗口视觉的顺序回退，并只返回与目标相关的紧凑状态。",
+    description="观察一个 Windows 窗口。先查应用记忆，再返回当前窗口截图供视觉模型理解。Agent 基于截图识别元素并决定操作。",
     schema={"type": "object", "properties": {
         "window_id": {"type": "string"}, "goal": {"type": "string"},
-        "mode": {"type": "string", "enum": ["auto", "uia", "ocr", "visual"], "default": "auto"},
-        "since_revision": {"type": "string"}, "limit": {"type": "integer", "default": 40}},
+        "since_revision": {"type": "string"}},
         "required": ["window_id", "goal"]})
 async def computer_state(args: dict) -> str:
+    """纯视觉感知：截图 + 视觉模型理解。Agent 看截图后测量元素位置。"""
     try:
         gate = _environment_gate()
         if gate:
@@ -420,101 +341,33 @@ async def computer_state(args: dict) -> str:
                        next_hint="停止工具调用并向用户报告当前阻断；新任务或重新启动应用后再继续")
         info = context.info()
         goal = str(args.get("goal", ""))
-        limit = max(1, min(int(args.get("limit", DEFAULT_ELEMENTS)), MAX_ELEMENTS))
-        mode = args.get("mode", "auto")
-        errors: dict[str, str] = {}
         memory = memory_candidates(context, goal)
-        elements: list[dict[str, Any]] = []
-        same_revision = args.get("since_revision") == context.revision
-        cached_matches = _goal_matches(context.elements, goal) if same_revision else []
-        if same_revision and context.source == "uia" and cached_matches and context.strategy_level < 2:
-            blocked = context.state_read()
-            return _ok(window=window_payload(context, info), revision=context.revision, source="uia",
-                       unchanged=True, elements=[] if blocked else [_bounded_element(item) for item in cached_matches[:limit]],
-                       progress="同一窗口连续观察未执行动作，已熔断" if blocked else "复用当前 revision 的 UIA 缓存",
-                       blocked=blocked, next_hint="停止重复观察并报告阻断" if blocked else "不要重复观察；使用缓存 ref 执行动作",
-                       **_spreadsheet_hint(info, goal))
-        if same_revision and context.source == "ocr" and cached_matches and context.strategy_level < 3:
-            blocked = context.state_read()
-            return _ok(window=window_payload(context, info), revision=context.revision, source="ocr",
-                       unchanged=True, elements=[] if blocked else [_bounded_element(item) for item in cached_matches[:limit]],
-                       progress="同一窗口连续观察未执行动作，已熔断" if blocked else "复用当前 revision 的 OCR 缓存",
-                       blocked=blocked, next_hint=("停止重复观察并报告阻断" if blocked else
-                                                   "使用 click_text 并传返回元素的完整 name，或直接 click_ref；不要改用 click_point"))
-        try:
-            if same_revision and context.source in ("uia", "ocr"):
-                raise RuntimeError("cached_revision_has_no_matching_target")
-            result = observe(hex(info.hwnd), "interactive", MAX_ELEMENTS)
-            all_elements = _window_elements(info, result.get("elements", []))
-            elements = _relevant(all_elements, goal, limit)
-            state = semantic_state(info, all_elements)
-            changed = context.update(state, "uia", all_elements)
-            if memory:
-                labels = {str(item.get("name", "")).casefold() for item in all_elements}
-                memory = [item for item in memory if str(item.get("action", {}).get("text", "")).casefold() in labels]
-            if memory:
-                blocked = not changed and context.state_read()
-                return _ok(window=window_payload(context, info), revision=context.revision, source="memory",
-                           elements=[] if blocked else elements, memory_hits=len(memory),
-                           progress="同一状态重复观察已熔断" if blocked else "已命中该应用的验证成功路径",
-                           blocked=blocked, next_hint="停止重复观察并报告阻断" if blocked else "优先使用返回的 ref 调用 computer_action")
-            relevant_names = [str(item.get("name", "")) for item in elements]
-            if context.strategy_level < 2 and elements and (mode == "uia" or any(term in " ".join(relevant_names).casefold() for term in _goal_terms(goal))):
-                blocked = not changed and context.state_read()
-                return _ok(window=window_payload(context, info), revision=context.revision, source="uia",
-                           elements=[] if blocked else elements,
-                           progress="同一状态重复观察已熔断" if blocked else "UIA 已找到相关控件", blocked=blocked,
-                           next_hint="停止重复观察并报告阻断" if blocked else "使用 click_ref；无需截图",
-                           **_spreadsheet_hint(info, goal))
-        except Exception as exc:
-            if str(exc) != "cached_revision_has_no_matching_target":
-                errors["uia"] = str(exc)[:300]
-        if mode != "uia":
-            try:
-                ocr_items = _ocr_elements(hex(info.hwnd), goal, limit)
-                if ocr_items and context.strategy_level < 3:
-                    ocr_state = {"window": info.title, "texts": [(item["name"], item["rect"]) for item in ocr_items]}
-                    changed = context.update(ocr_state, "ocr", ocr_items)
-                    if not changed and context.state_read():
-                        return _ok(window=window_payload(context, info), revision=context.revision, source="none", elements=[],
-                                   unchanged=True, progress="OCR 状态连续不变且未执行动作，已熔断",
-                                   blocked=True, next_hint="停止重复观察并请求用户介入")
-                    return _ok(window=window_payload(context, info), revision=context.revision, source="ocr",
-                               elements=ocr_items, progress="本地 OCR 已找到相关文字", blocked=False,
-                               coordinate_space="window",
-                               next_hint="使用 click_text 并传返回元素的完整 name，或直接 click_ref；不要把 rect 当屏幕坐标",
-                               **_spreadsheet_hint(info, goal))
-            except Exception as exc:
-                errors["ocr"] = str(exc)[:300]
-        if mode in ("auto", "visual"):
-            if context.visual_sent_for_revision == context.revision:
-                context.fail()
-                return _ok(window=window_payload(context, info), revision=context.revision, source="none",
-                           unchanged=True, progress="当前 revision 已经返回过视觉图片", blocked=True,
-                           next_hint="不要重复请求图片；执行新策略或请用户介入", errors=errors)
-            image, current = _capture_window(hex(info.hwnd), activate=False)
-            digest = _image_digest(image)
-            if digest == context.image_hash:
-                context.fail()
-                return _ok(window=window_payload(context, current), revision=context.revision, source="none",
-                           unchanged=True, progress="当前窗口与上一张视觉图片相同", blocked=True,
-                           next_hint="不要重复截图或点击；请用户说明当前界面或接管操作", errors=errors)
-            context.image_hash = digest
-            context.visual_sent_for_revision = context.revision
-            context.source = "visual"
-            context.elements = []
-            path = Path(_get_screenshot_dir()) / f"state_{context.window_id}_{context.revision}.png"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            image.save(path, "PNG")
-            left, top, right, bottom = current.rect
+        if memory:
+            candidates = [_bounded_element(item.get("action", {})) for item in memory[:5]]
+            return _ok(window=window_payload(context, info), revision=context.revision, source="memory",
+                       elements=[], memory_hits=len(memory), progress="已命中该应用的验证成功路径",
+                       next_hint="优先使用记忆中的路径调用 computer_action；否则截图观察")
+        image, current = _capture_window(hex(info.hwnd), activate=False)
+        digest = _image_digest(image)
+        if digest == context.image_hash and context.visual_sent_for_revision == context.revision:
             return _ok(window=window_payload(context, current), revision=context.revision, source="visual",
-                       image_path=str(path.resolve()), origin=[left, top], size=[right - left, bottom - top],
-                       progress="UIA 与 OCR 均不足，返回当前窗口唯一视觉图片", blocked=False,
-                       next_hint="直接理解本工具附带图片，并在当前 revision 上调用 click_point", errors=errors)
-        context.fail()
-        return _ok(window=window_payload(context, info), revision=context.revision, source="none", elements=[],
-                   progress="当前感知模式未找到目标", blocked=True,
-                   next_hint=f"升级到 {STRATEGIES[context.strategy_level]} 或请求用户介入", errors=errors)
+                       unchanged=True, progress="当前窗口与上一张截图相同",
+                       next_hint="窗口未变化；执行新操作或请用户介入")
+        path = Path(_get_screenshot_dir()) / f"state_{context.window_id}_r{context.revision_no + 1}-{digest[:6]}.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        image.save(path, "PNG")
+        context.image_hash = digest
+        context.source = "visual"
+        context.revision_no += 1
+        context.revision = f"r{context.revision_no}-{digest[:6]}"
+        context.visual_sent_for_revision = context.revision
+        context.elements = []
+        context.references.clear()
+        left, top, right, bottom = current.rect
+        return _ok(window=window_payload(context, current), revision=context.revision, source="visual",
+                   image_path=str(path.resolve()), origin=[left, top], size=[right - left, bottom - top],
+                   coordinate_space="window", progress="已返回当前窗口截图",
+                   next_hint="分析截图识别目标元素，使用 click_point（窗口内坐标）或 click_ref 执行动作")
     except KeyError:
         return parse_result({"status": "error", "code": "unknown_window", "retryable": False,
                              "blocked": True,
