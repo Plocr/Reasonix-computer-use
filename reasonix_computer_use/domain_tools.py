@@ -338,6 +338,8 @@ async def computer_state(args: dict) -> str:
             return _ok(window=window_payload(context, info), revision=context.revision, source="memory",
                        elements=[], memory_hits=len(memory), progress="已命中该应用的验证成功路径",
                        next_hint="优先使用记忆中的路径调用 computer_action；否则截图观察")
+        # 截图前确保窗口在前台（避免读取到被遮挡的界面）
+        _ensure_foreground(context)
         image, current = _capture_window(hex(info.hwnd), activate=False)
         digest = _image_digest(image)
         if digest == context.image_hash and context.visual_sent_for_revision == context.revision:
@@ -423,12 +425,18 @@ async def _click_ref(context: WindowContext, ref: str) -> dict[str, Any]:
         "x": x, "y": y, "button": "left"}))
 
 
-def _activate_for_keyboard(context: WindowContext) -> bool:
+def _ensure_foreground(context: WindowContext) -> None:
+    """确保目标窗口在前台，避免截图读到遮挡的界面"""
     try:
         activate_window(context.hwnd)
+        import time
+        time.sleep(0.3)  # 等待窗口动画完成
     except OSError:
         pass
-    # Cross-platform: check if our window is focused
+
+
+def _activate_for_keyboard(context: WindowContext) -> bool:
+    _ensure_foreground(context)
     foreground = _get_foreground_window_id()
     return foreground == context.hwnd
 
@@ -806,6 +814,8 @@ async def computer_action(args: dict) -> str:
         context = REGISTRY.get(str(args["window_id"]))
         if str(args.get("revision")) != context.revision:
             return tool_error("stale_revision", "窗口状态已变化；请调用 computer_state 获取最新 revision")
+        # 执行前确保窗口在前台
+        _ensure_foreground(context)
         actions = args.get("actions")
         if not isinstance(actions, list) or not 1 <= len(actions) <= MAX_BATCH:
             return tool_error("invalid_batch", "actions 必须包含 1 到 5 个动作")

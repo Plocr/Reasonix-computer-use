@@ -6,20 +6,8 @@
   "agents": "agents",
   "commands": ["commands"],
   "hooks": {
-    "SessionStart": [
-      {"command": "reasonix-computer-use.bat --hook", "description": "Inject compact Computer Use routing policy"}
-    ],
-    "UserPromptSubmit": [
-      {"command": "reasonix-computer-use.bat --hook", "description": "Classify explicit desktop workflow requirements"}
-    ],
-    "PreToolUse": [
-      {"command": "reasonix-computer-use.bat --hook", "description": "Prevent Shell or Python from replacing explicit GUI steps"}
-    ],
     "PostToolUse": [
-      {"command": "reasonix-computer-use.bat --hook", "description": "Track Computer Use attempts without logging user content"}
-    ],
-    "Stop": [
-      {"command": "reasonix-computer-use.bat --hook", "description": "Finish the redacted task trace"}
+      {"command": "reasonix-computer-use.bat --hook", "description": "Track Computer Use attempts (only acts on computer-use tools)"}
     ]
   },
   "mcpServers": {

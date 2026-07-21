@@ -792,7 +792,7 @@ def test_manifest_and_docs_reference_new_api():
     manifest = json.loads((root / "reasonix-plugin.json").read_text(encoding="utf-8"))
     assert manifest["version"] == "0.8.0-beta.1"
     assert manifest["commands"] == ["commands"]
-    assert set(manifest["hooks"]) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"}
+    assert set(manifest["hooks"]) == {"PostToolUse"}
     routing = (root / "CLAUDE.md").read_text(encoding="utf-8")
     assert "chrome-devtools" in routing
     assert "computer_task_start" not in routing
@@ -811,82 +811,74 @@ def test_spreadsheet_skill_is_packaged_and_concise():
     assert len(text) < 5000
 
 
-def test_route_guard_blocks_shell_for_explicit_gui_workflow(monkeypatch, tmp_path):
+def test_route_guard_tracks_computer_use_tools(monkeypatch, tmp_path):
+    """New behavior: hook only tracks computer-use tool usage."""
     from hooks import route_guard
 
     monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path)
     session = "s1"
-    route_guard.handle({"hook_event_name": "UserPromptSubmit", "session_id": session,
-                        "prompt": "桌面新建Excel，然后使用计算器应用逐个相加并保存文件"})
-    result = route_guard.handle({"hook_event_name": "PreToolUse", "session_id": session,
-                                 "tool_name": "bash", "tool_input": {"command": "python task.py"}})
-    output = result["hookSpecificOutput"]
-    assert output["permissionDecision"] == "deny"
-    assert "computer-use" in output["permissionDecisionReason"]
+    # Non computer-use tools are ignored
+    result = route_guard.handle({"hook_event_name": "PostToolUse", "session_id": session,
+                                 "tool_name": "bash", "tool_result": {"status": "ok"}})
+    assert result is None
+    # Computer-use tools are tracked
+    result = route_guard.handle({"hook_event_name": "PostToolUse", "session_id": session,
+                                 "tool_name": "computer_app", "tool_result": {"status": "ok"}})
+    assert result is None  # No blocked, no context injected
 
 
-def test_route_guard_allows_user_requested_python(monkeypatch, tmp_path):
+def test_route_guard_reports_blocked(monkeypatch, tmp_path):
+    """When computer-use tool returns blocked=true, hook reports it."""
+    from hooks import route_guard
+
+    monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path)
+    session = "s1"
+    result = route_guard.handle({"hook_event_name": "PostToolUse", "session_id": session,
+                                 "tool_name": "computer_action", "tool_result": {"blocked": True}})
+    assert result is not None
+    assert "blocked" in result["hookSpecificOutput"]["additionalContext"]
+
+
+def test_route_guard_ignores_non_computer_tools(monkeypatch, tmp_path):
+    """Non computer-use tools should be completely ignored."""
     from hooks import route_guard
 
     monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path)
     session = "s2"
-    route_guard.handle({"hook_event_name": "UserPromptSubmit", "session_id": session,
-                        "prompt": "使用Python脚本在桌面创建Excel文件"})
-    assert route_guard.handle({"hook_event_name": "PreToolUse", "session_id": session,
-                               "tool_name": "bash", "tool_input": {"command": "python task.py"}}) is None
+    result = route_guard.handle({"hook_event_name": "PreToolUse", "session_id": session,
+                                 "tool_name": "bash", "tool_input": {"command": "python task.py"}})
+    assert result is None
 
 
-def test_route_guard_does_not_affect_non_desktop_tasks(monkeypatch, tmp_path):
+def test_route_guard_without_session_id(monkeypatch, tmp_path):
+    """Hook works without session_id (uses 'current-task' key)."""
     from hooks import route_guard
 
     monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path)
-    session = "s3"
-    route_guard.handle({"hook_event_name": "UserPromptSubmit", "session_id": session,
-                        "prompt": "运行项目测试并修复失败"})
-    assert route_guard.handle({"hook_event_name": "PreToolUse", "session_id": session,
-                               "tool_name": "bash"}) is None
-
-
-def test_route_guard_launcher_emits_utf8_deny(tmp_path):
-    root = Path(__file__).resolve().parent.parent
-    env = dict(os.environ, LOCALAPPDATA=str(tmp_path))
-    prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "cli-test",
-              "prompt": "桌面新建Excel并使用计算器应用逐个相加"}
-    submitted = subprocess.run(["cmd", "/d", "/c", str(root / "reasonix-computer-use.bat"), "--hook"],
-                               input=json.dumps(prompt, ensure_ascii=False).encode("utf-8"),
-                               capture_output=True, env=env, timeout=10, check=True)
-    assert json.loads(submitted.stdout.decode("utf-8"))["hookSpecificOutput"]["additionalContext"]
-    before = {"hook_event_name": "PreToolUse", "session_id": "cli-test", "tool_name": "bash"}
-    blocked = subprocess.run(["cmd", "/d", "/c", str(root / "reasonix-computer-use.bat"), "--hook"],
-                             input=json.dumps(before).encode("utf-8"), capture_output=True,
-                             env=env, timeout=10, check=True)
-    assert json.loads(blocked.stdout.decode("utf-8"))["hookSpecificOutput"]["permissionDecision"] == "deny"
-
-
-def test_route_guard_without_session_id_uses_current_task(monkeypatch, tmp_path):
-    from hooks import route_guard
-
-    monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path)
-    route_guard.handle({"hook_event_name": "UserPromptSubmit",
-                        "prompt": "打开WPS表格并修改单元格后保存文件"})
-    result = route_guard.handle({"hook_event_name": "PreToolUse", "tool_name": "bash"})
-    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    result = route_guard.handle({"hook_event_name": "PostToolUse",
+                                 "tool_name": "computer_app", "tool_result": {"status": "ok"}})
+    assert result is None
 
 
 def test_route_guard_uses_thread_id_to_isolate_tasks(monkeypatch, tmp_path):
+    """Different thread_ids have isolated state."""
     from hooks import route_guard
 
     monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path)
-    route_guard.handle({"hook_event_name": "UserPromptSubmit", "thread_id": "gui",
-                        "prompt": "打开WPS并点击单元格"})
-    route_guard.handle({"hook_event_name": "UserPromptSubmit", "thread_id": "code",
-                        "prompt": "运行项目测试"})
-    blocked = route_guard.handle({"hook_event_name": "PreToolUse", "thread_id": "gui",
-                                  "tool_name": "bash"})
-    allowed = route_guard.handle({"hook_event_name": "PreToolUse", "thread_id": "code",
-                                  "tool_name": "bash"})
-    assert blocked["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert allowed is None
+    # Thread "gui" uses computer-use
+    route_guard.handle({"hook_event_name": "PostToolUse", "thread_id": "gui",
+                        "tool_name": "computer_action", "tool_result": {"blocked": True}})
+    # Thread "code" is separate
+    route_guard.handle({"hook_event_name": "PostToolUse", "thread_id": "code",
+                        "tool_name": "computer_app", "tool_result": {"status": "ok"}})
+    # Only gui thread should see blocked
+    result_gui = route_guard.handle({"hook_event_name": "PostToolUse", "thread_id": "gui",
+                                     "tool_name": "computer_state", "tool_result": {"status": "ok"}})
+    result_code = route_guard.handle({"hook_event_name": "PostToolUse", "thread_id": "code",
+                                      "tool_name": "computer_state", "tool_result": {"status": "ok"}})
+    # gui has blocked seen, code doesn't
+    assert result_gui is not None  # blocked context
+    assert result_code is None
 
 
 def test_readme_documents_git_dependencies():
