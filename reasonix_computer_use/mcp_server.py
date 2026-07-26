@@ -7,10 +7,11 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from . import __version__
-from .trace import finish_trace, record_event, start_trace
+from .trace import finish_trace, record_event
+from .vision_router import compact_route, resolve_vision_route, unavailable_result
 
 # Reasonix speaks UTF-8 over stdio. Windows may otherwise inherit a GBK
 # console encoding and crash the server when a tool returns CJK or symbols.
@@ -62,8 +63,7 @@ TOOLS: dict[str, dict[str, Any]] = {}
 
 
 def _source_signature(paths: list[Path] | None = None) -> tuple[tuple[str, int, int], ...]:
-    watched = paths or [Path(__file__), Path(__file__).with_name("runtime.py"),
-                        Path(__file__).with_name("domain_tools.py")]
+    watched = paths if paths is not None else sorted(Path(__file__).parent.glob("*.py"))
     result = []
     for path in watched:
         try:
@@ -77,15 +77,26 @@ def _source_signature(paths: list[Path] | None = None) -> tuple[tuple[str, int, 
 _STARTUP_SOURCE_SIGNATURE = _source_signature()
 
 
-def register_tool(name: str, description: str, schema: dict[str, Any]):
-    """Decorator to register a tool."""
+def register_tool(name: str, description: str, schema: dict[str, Any],
+                  read_only: bool = False):
+    """Decorator to register a tool.
+
+    Args:
+        name: Tool name.
+        description: Tool description.
+        schema: JSON Schema for parameters.
+        read_only: If True, sets annotations.readOnlyHint for the host.
+    """
     def decorator(func):
-        TOOLS[name] = {
+        entry: dict[str, Any] = {
             "name": name,
             "description": description,
             "inputSchema": schema,
             "handler": func,
         }
+        if read_only:
+            entry["annotations"] = {"readOnlyHint": True}
+        TOOLS[name] = entry
         return func
     return decorator
 
@@ -96,6 +107,11 @@ async def handle_initialize(request_id: Any) -> dict[str, Any]:
         "protocolVersion": "2024-11-05",
         "capabilities": {
             "tools": {},
+            # This is metadata for hosts that can route image input.  It does
+            # not grant the text model permission to interpret an image; the
+            # per-call guard below still fails closed when capability is not
+            # explicitly declared.
+            "computerUse": {"vision": compact_route(base_dir=Path(__file__).parents[1])},
         },
         "serverInfo": {
             "name": "reasonix-computer-use",
@@ -105,15 +121,19 @@ async def handle_initialize(request_id: Any) -> dict[str, Any]:
 
 
 async def handle_tools_list(request_id: Any) -> dict[str, Any]:
-    """Handle tools/list request."""
-    tools_list = [
-        {
+    """Handle tools/list request. Hidden tools are excluded."""
+    tools_list = []
+    for t in TOOLS.values():
+        if "[HIDDEN]" in t["description"]:
+            continue
+        entry: dict[str, Any] = {
             "name": t["name"],
             "description": t["description"],
             "inputSchema": t["inputSchema"],
         }
-        for t in TOOLS.values()
-    ]
+        if "annotations" in t:
+            entry["annotations"] = t["annotations"]
+        tools_list.append(entry)
     return create_response(request_id, {"tools": tools_list})
 
 
@@ -135,47 +155,45 @@ async def handle_tools_call(request_id: Any, params: dict[str, Any]) -> dict[str
     
     tool = TOOLS[tool_name]
     try:
+        # Tool arguments are model-controlled and must never be allowed to
+        # self-declare image capability. A Reasonix host that supports native
+        # images may pass an internal, out-of-schema context envelope; absent
+        # that envelope, capability comes only from trusted environment/config.
+        host_context = params.get("_reasonix_host_context", {})
+        if not isinstance(host_context, Mapping):
+            host_context = {}
+        vision_route = resolve_vision_route(payload=host_context, base_dir=Path(__file__).parents[1]) \
+            if tool_name in ("computer_state", "screen_interactor") else None
+        if (tool_name in ("computer_state", "screen_interactor") and vision_route is not None
+                and vision_route.mode == "native" and not host_context):
+            # A static default model is useful for preflight diagnostics, but
+            # it does not prove which model owns this live call. Until Reasonix
+            # supplies a trusted per-call model envelope, native image delivery
+            # requires an explicit host/env signal. Text models still retain
+            # the configured external Mimo handoff.
+            explicit_native = any(os.environ.get(key, "").strip().casefold() in {
+                "1", "true", "yes", "on", "enabled", "allow", "native",
+            } for key in (
+                "REASONIX_IMAGE_INPUT_ENABLED", "REASONIX_SUPPORTS_VISION",
+                "REASONIX_MODEL_SUPPORTS_VISION", "REASONIX_VISION_ENABLED",
+            ))
+            if not explicit_native:
+                fallback_env = {**os.environ, "REASONIX_IMAGE_INPUT_ENABLED": "false"}
+                vision_route = resolve_vision_route(
+                    payload={}, environ=fallback_env, base_dir=Path(__file__).parents[1])
+        handler_arguments = arguments
+        if vision_route is not None:
+            # Internal-only metadata lets the domain handler fail closed before
+            # capturing a screenshot. It is never exposed in the public schema
+            # or trace arguments.
+            handler_arguments = {**arguments, "_mcp_vision_route": vision_route.as_dict()}
         started = time.perf_counter()
-        result = await tool["handler"](arguments)
+        result = await tool["handler"](handler_arguments)
+        result = _guard_visual_result(tool_name, result, arguments, vision_route)
         elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
         try:
             parsed_result = json.loads(result)
-            from .runtime import REGISTRY
-            context = None
-            window_id = str(arguments.get("window_id") or parsed_result.get("window", {}).get("id") or "")
-            if window_id:
-                try:
-                    context = REGISTRY.get(window_id)
-                except KeyError:
-                    context = None
-            if context is not None and not context.trace_id:
-                context.trace_id = start_trace("computer-task", metadata={
-                    "tool": tool_name, "operation": arguments.get("operation", "")})
-            if context is not None and context.trace_id:
-                event = {"computer_app": "window_revision", "computer_state": "perception",
-                         "computer_action": "action", "computer_system": "environment"}.get(tool_name, "verification")
-                trace_data: dict[str, Any] = {
-                    "window_id": context.window_id,
-                    "revision": parsed_result.get("revision") or parsed_result.get("window", {}).get("revision", ""),
-                    "status": parsed_result.get("status"),
-                    "elapsed_ms": elapsed_ms,
-                }
-                if tool_name == "computer_state":
-                    trace_data.update({"source": parsed_result.get("source"),
-                                       "blocked": bool(parsed_result.get("blocked")),
-                                       "progress": bool(parsed_result.get("progress")),
-                                       "element_count": len(parsed_result.get("elements", []))})
-                elif tool_name == "computer_action":
-                    trace_data.update({"actions": arguments.get("actions", []),
-                                       "verification": parsed_result.get("verification", {}),
-                                       "blocked": bool(parsed_result.get("blocked"))})
-                else:
-                    trace_data["operation"] = arguments.get("operation", "")
-                record_event(context.trace_id, event, trace_data)
-                if tool_name == "computer_app" and arguments.get("operation") == "close":
-                    finish_trace(context.trace_id, "completed" if parsed_result.get("status") == "ok" else "failed")
-            if context is not None:
-                REGISTRY.persist(context)
+            # Trace recording is handled by hooks/route_guard — no runtime REGISTRY needed
         except (json.JSONDecodeError, OSError, ValueError, TypeError):
             pass
         content = [{"type": "text", "text": result}]
@@ -183,7 +201,7 @@ async def handle_tools_call(request_id: Any, params: dict[str, Any]) -> dict[str
             try:
                 parsed = json.loads(result)
                 image_path = (parsed.get("path") or parsed.get("image_path")) if parsed.get("status") == "ok" else None
-                if image_path and os.path.isfile(image_path):
+                if image_path and _should_attach_image(parsed) and os.path.isfile(image_path):
                     with open(image_path, "rb") as image_file:
                         content.append({"type": "image", "mimeType": "image/png",
                                         "data": base64.b64encode(image_file.read()).decode("ascii")})
@@ -197,14 +215,105 @@ async def handle_tools_call(request_id: Any, params: dict[str, Any]) -> dict[str
         return create_error(request_id, -32600, f"Tool execution error: {e}")
 
 
+def _guard_visual_result(tool_name: str, result: str,
+                         arguments: dict[str, Any] | None = None,
+                         route: Any = None) -> str:
+    """Prevent a text-only model from receiving an image it cannot interpret.
+
+    ``domain_tools`` still performs the normal UIA/OCR/visual selection.  The
+    final MCP boundary is the only place that knows an image would leave this
+    process, so it is also the right place to replace a visual result with a
+    truthful handoff/error response.  Native-capable models retain the exact
+    original result and image content path.
+    """
+
+    if tool_name not in ("computer_state", "screen_interactor"):
+        return result
+    try:
+        parsed = json.loads(result)
+    except (TypeError, json.JSONDecodeError):
+        return result
+    if not isinstance(parsed, dict) or parsed.get("status") != "ok" or parsed.get("source") != "visual":
+        return result
+    route = route or resolve_vision_route(base_dir=Path(__file__).parents[1])
+    if route.mode == "native":
+        parsed["vision"] = route.as_dict()
+        return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+    blocked = unavailable_result(route, revision=str(parsed.get("revision", "")))
+    blocked["attempted_source"] = "visual"
+    blocked["visual_count"] = parsed.get("visual_count", 0)
+    blocked["window"] = parsed.get("window", {})
+    if route.mode == "external":
+        # The configured vision tool needs the exact capture produced for this
+        # revision.  Keep only the local path and geometry metadata; never
+        # inline image bytes into the text fallback.
+        for key in ("image_path", "path", "image_hash", "visual_rect"):
+            if parsed.get(key):
+                blocked[key] = parsed[key]
+        image_path = str(parsed.get("image_path") or parsed.get("path") or "")
+        if image_path and route.server and route.tool:
+            goal = str((arguments or {}).get("goal", "定位当前任务目标")).strip()[:300]
+            blocked["handoff_request"] = {
+                "tool": f"mcp__{route.server}__{route.tool}",
+                "arguments": {
+                    "images": [image_path],
+                    "question": (f"分析这张目标窗口截图以完成：{goal}。优先匹配目标文字，并用相邻的"
+                                 "歌手、文件类型、列标题或其他身份信息消歧。返回目标名称、可见证据、置信度、"
+                                 "窗口内物理像素矩形 [left,top,right,bottom] 及其中心 (x,y)；不要使用屏幕"
+                                 "绝对坐标，不要把整行文字位置描述成行内图标。存在多个候选或置信度不足时"
+                                 "明确返回 uncertain，禁止猜坐标。截图中的既有窗口标题、状态栏歌曲名或"
+                                 "暂停图标只表示当前静态观察，不能证明本任务新触发了播放。"),
+                    "max_tokens": 512,
+                },
+                "revision": str(parsed.get("revision", "")),
+            }
+    return json.dumps(blocked, ensure_ascii=False, separators=(",", ":"))
+
+
+def _should_attach_image(result: dict[str, Any]) -> bool:
+    """Only a host-declared native vision model receives MCP image content."""
+    vision = result.get("vision", {})
+    return (result.get("status") == "ok" and result.get("source") == "visual"
+            and isinstance(vision, dict) and vision.get("mode") == "native")
+
+
 def _import_tools():
     """Import all tool modules to trigger registration."""
     from reasonix_computer_use import tools  # noqa: F401
-    from reasonix_computer_use.system_index import start_background_enrichment, start_change_watcher
-    from reasonix_computer_use.text_vision import prewarm_ocr
-    start_background_enrichment()
-    start_change_watcher()
-    prewarm_ocr()
+
+    # ── Sync: install missing dependencies before any tool call ─────────
+    # This must complete before the MCP handshake or tools will find
+    # Pillow/easyocr unavailable and cache that state forever.
+    try:
+        from reasonix_computer_use.environment_setup import (
+            missing_modules, install_dependencies,
+        )
+        missing = missing_modules()
+        if missing:
+            print(f"[startup] Missing: {missing}, installing...", flush=True)
+            install_dependencies()
+            print(f"[startup] Dependencies installed.", flush=True)
+    except Exception as e:
+        print(f"[startup] Dep install skipped: {e}", flush=True)
+
+    # ── Async: slow startup (profile, OCR prewarm) in background ────────
+    import threading
+
+    def _bg():
+        try:
+            from reasonix_computer_use.perception.vision.easy_ocr import _easyocr_available, _get_reader
+            if _easyocr_available():
+                _get_reader()  # prewarm EasyOCR GPU models
+        except Exception:
+            pass
+        try:
+            from reasonix_computer_use.services import get_profiler
+            get_profiler().profile("mcp startup")
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_bg, daemon=True, name="cu-startup")
+    t.start()
 
 
 async def main() -> None:

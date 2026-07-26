@@ -29,6 +29,7 @@ desktop.ini
 reasonix-plugin.json.local
 
 # Auto-generated machine profile, application memory and visual fallbacks
+memory/
 memory/system.md
 memory/system-index.json
 memory/applist.md
@@ -37,6 +38,11 @@ memory/apps/
 memory/screenshots/
 memory/traces/
 memory/operation-log.md
+
+# Embedded toolchain and build artifacts
+.tools/
+dist/
+capability_app/
 .tools/
 capability-reports/
 capability_app/bin/

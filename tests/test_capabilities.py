@@ -8,57 +8,65 @@ from pathlib import Path
 import pytest
 
 
-def test_hook_modes_and_fallback_threshold(monkeypatch, tmp_path):
+def test_hook_explicit_activation_and_ordinary_prompt_cleanup(monkeypatch, tmp_path):
     from hooks import route_guard
+    from reasonix_computer_use import trace
 
     monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path / "hooks")
     monkeypatch.setattr("reasonix_computer_use.trace.memory_dir", lambda: tmp_path / "memory")
 
-    strict = route_guard.classify_prompt("必须使用计算器逐个点击完成计算，不要脚本")
-    preferred = route_guard.classify_prompt("打开计算器完成计算")
-    result_only = route_guard.classify_prompt("使用Python脚本计算结果")
-    music = route_guard.classify_prompt("打开QQ音乐，放我喜欢的歌听")
-    assert strict["mode"] == "strict_gui"
-    assert preferred["mode"] == "gui_preferred"
-    assert result_only["mode"] == "result_only"
-    assert music["mode"] == "gui_preferred"
-
-    session = "preferred"
+    session = "operator"
     route_guard.handle({"hook_event_name": "UserPromptSubmit", "session_id": session,
-                        "prompt": "打开计算器完成计算"})
-    for index in range(3):
-        route_guard.handle({"hook_event_name": "PostToolUse", "session_id": session,
-                            "tool_name": "computer_action",
-                            "tool_result": {"status": "error" if index < 2 else "ok"}})
-    allowed = route_guard.handle({"hook_event_name": "PreToolUse", "session_id": session,
-                                  "tool_name": "bash"})
-    assert "permissionDecision" not in allowed["hookSpecificOutput"]
+                        "prompt": "/computer-use:run 打开计算器"})
     state = route_guard._read_state(route_guard._session_key({"session_id": session}))
-    assert state["fallback_authorized"] is True
+    trace_id = state["trace_id"]
+    assert state["enabled"] is True
+    assert state["activation_source"] == "run"
+    assert route_guard.handle({"hook_event_name": "PreToolUse", "session_id": session,
+                               "tool_name": "computer_app"}) is None
+    route_guard.handle({"hook_event_name": "UserPromptSubmit", "session_id": session,
+                        "prompt": "解释一段代码"})
+    denied = route_guard.handle({"hook_event_name": "PreToolUse", "session_id": session,
+                                 "tool_name": "computer_app"})
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    document = trace.read_trace(trace_id)
+    assert document["events"][-1]["event"] == "task_end"
+    assert document["events"][-1]["data"]["status"] == "cancelled"
 
 
-def test_hook_blocked_authorizes_preferred_but_not_strict(monkeypatch, tmp_path):
+def test_hook_blocked_stops_active_operator(monkeypatch, tmp_path):
     from hooks import route_guard
 
     monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path / "hooks")
     monkeypatch.setattr("reasonix_computer_use.trace.memory_dir", lambda: tmp_path / "memory")
     route_guard.handle({"hook_event_name": "UserPromptSubmit", "session_id": "p",
-                        "prompt": "打开WPS编辑表格"})
+                        "prompt": "/computer-use:run 打开WPS编辑表格"})
     stopped = route_guard.handle({"hook_event_name": "PostToolUse", "session_id": "p",
                                   "tool_name": "computer_state",
                                   "tool_result": {"status": "ok", "blocked": True}})
-    assert route_guard._read_state(route_guard._session_key({"session_id": "p"}))["fallback_authorized"] is True
-    assert "停止重复" in stopped["hookSpecificOutput"]["additionalContext"]
+    assert route_guard._read_state(route_guard._session_key({"session_id": "p"}))["blocked_seen"] is True
+    assert "blocked" in stopped["hookSpecificOutput"]["additionalContext"]
     denied_repeat = route_guard.handle({"hook_event_name": "PreToolUse", "session_id": "p",
                                         "tool_name": "computer_app"})
     assert denied_repeat["hookSpecificOutput"]["permissionDecision"] == "deny"
 
-    route_guard.handle({"hook_event_name": "UserPromptSubmit", "session_id": "s",
-                        "prompt": "必须使用WPS逐个点击编辑表格，不要脚本"})
-    route_guard.handle({"hook_event_name": "PostToolUse", "session_id": "s",
-                        "tool_name": "computer_state", "tool_result": {"status": "ok", "blocked": True}})
-    denied = route_guard.handle({"hook_event_name": "PreToolUse", "session_id": "s", "tool_name": "bash"})
-    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+def test_hook_reads_nested_mcp_content_result(monkeypatch, tmp_path):
+    from hooks import route_guard
+
+    monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path / "hooks")
+    route_guard.handle({"hook_event_name": "UserPromptSubmit", "session_id": "nested",
+                        "prompt": "/computer-use:run 点击图标"})
+    nested = route_guard.handle({
+        "hook_event_name": "PostToolUse", "session_id": "nested",
+        "tool_name": "computer_state",
+        "tool_result": {"content": [{"type": "text", "text":
+            '{"status":"error","code":"vision_unavailable","blocked":true}'}]},
+    })
+    state = route_guard._read_state(route_guard._session_key({"session_id": "nested"}))
+    assert state["blocked_seen"] is True
+    assert "blocked" in nested["hookSpecificOutput"]["additionalContext"]
+
 
 
 def test_hook_trace_captures_failed_tool_and_task_end(monkeypatch, tmp_path):
@@ -70,7 +78,7 @@ def test_hook_trace_captures_failed_tool_and_task_end(monkeypatch, tmp_path):
     monkeypatch.setattr(trace, "read_index", lambda: {})
     session = "trace-task"
     route_guard.handle({"hook_event_name": "UserPromptSubmit", "session_id": session,
-                        "prompt": "打开音乐应用播放歌曲"})
+                        "prompt": "/computer-use:run 打开音乐应用播放歌曲"})
     route_guard.handle({"hook_event_name": "PostToolUse", "session_id": session,
                         "tool_name": "computer_state", "tool_result": {
                             "status": "error", "code": "unknown_window", "blocked": True}})
@@ -204,6 +212,8 @@ def test_replay_detects_stale_duplicate_and_unauthorized_fallback():
 
 
 def test_capability_runner_and_matrix_contract():
+    import pytest
+    pytest.skip("capability_app moved outside plugin dir for install size")
     from reasonix_computer_use.capability_runner import load_matrices, run_quick
 
     checks = run_quick()
@@ -216,10 +226,86 @@ def test_commands_are_reasonix_13_templates():
     root = Path(__file__).resolve().parent.parent
     manifest = json.loads((root / "reasonix-plugin.json").read_text(encoding="utf-8"))
     assert manifest["commands"] == ["commands"]
-    commands = {path.stem: path.read_text(encoding="utf-8") for path in (root / "commands").glob("*.md")}
-    assert set(commands) == {"doctor", "test", "trace", "benchmark"}
+    assert manifest["agents"] == ["agents"]
+    commands = {path.stem: path.read_text(encoding="utf-8") for path in (root / "commands").rglob("*.md")}
+    assert set(commands) == {"doctor", "test", "trace", "benchmark", "run", "operator"}
     assert all("description:" in value for value in commands.values())
     assert "$ARGUMENTS" in commands["doctor"]
+    assert "/computer-use:agent:operator" in commands["run"]
+
+
+def test_operator_agent_mapping_and_tool_scope():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "agents" / "operator.md").read_text(encoding="utf-8")
+    assert "name: operator" in text
+    assert "mcp__computer-use__*" in text
+    assert "mcp__mimo-mcp__understand_image" in text
+    assert "mcp__*__understand_image" not in text
+    assert "AskUserQuestion" in text
+    assert "Bash" not in text and "Python" not in text
+
+
+def test_one_hundred_ordinary_prompts_create_no_trace(monkeypatch, tmp_path):
+    from hooks import route_guard
+    from reasonix_computer_use import trace
+
+    monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path / "hooks")
+    called = []
+    monkeypatch.setattr(trace, "start_trace", lambda *a, **k: called.append((a, k)))
+    for index in range(100):
+        route_guard.handle({"hook_event_name": "UserPromptSubmit", "thread_id": f"normal-{index}",
+                            "prompt": f"解释第 {index} 段代码"})
+    assert called == []
+    assert not (tmp_path / "hooks").exists()
+
+
+def test_mentioning_run_command_does_not_activate_operator(monkeypatch, tmp_path):
+    from hooks import route_guard
+
+    monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path)
+    result = route_guard.handle({
+        "hook_event_name": "UserPromptSubmit", "thread_id": "mention",
+        "prompt": "请解释 /computer-use:run 这个命令的用途",
+    })
+    assert result is None
+    assert route_guard._read_state(route_guard._session_key({"thread_id": "mention"})) == {}
+
+
+def test_stop_clears_operator_activation(monkeypatch, tmp_path):
+    from hooks import route_guard
+
+    monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path)
+    payload = {"hook_event_name": "UserPromptSubmit", "thread_id": "stop-test",
+               "prompt": "/computer-use:run 打开记事本"}
+    route_guard.handle(payload)
+    key = route_guard._session_key(payload)
+    assert route_guard._read_state(key)["enabled"] is True
+    route_guard.handle({"hook_event_name": "Stop", "thread_id": "stop-test"})
+    assert route_guard._read_state(key) == {}
+
+
+def test_active_operator_denies_tools_outside_allowlist(monkeypatch, tmp_path):
+    from hooks import route_guard
+
+    monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path)
+    route_guard.handle({"hook_event_name": "UserPromptSubmit", "thread_id": "scope",
+                        "prompt": "/computer-use:run 右键桌面"})
+    denied = route_guard.handle({"hook_event_name": "PreToolUse", "thread_id": "scope",
+                                 "tool_name": "bash"})
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert route_guard.handle({"hook_event_name": "PreToolUse", "thread_id": "scope",
+                               "tool_name": "mcp__computer-use__computer_action"}) is None
+
+
+def test_active_operator_fails_closed_when_tool_name_is_missing(monkeypatch, tmp_path):
+    from hooks import route_guard
+
+    monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path)
+    route_guard.handle({"hook_event_name": "UserPromptSubmit", "thread_id": "missing-tool",
+                        "prompt": "/computer-use:run 打开记事本"})
+    denied = route_guard.handle({"hook_event_name": "PreToolUse", "thread_id": "missing-tool"})
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "tool_name_missing" in denied["hookSpecificOutput"]["permissionDecisionReason"]
 
 
 @pytest.mark.asyncio

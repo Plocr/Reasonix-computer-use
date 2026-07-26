@@ -10,11 +10,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .system_profile import memory_dir
+from .services import memory_dir
 
 
 INPUT_GUARD_TTL_SECONDS = 600
 _MAX_ENTRIES = 100
+_LOCK_TIMEOUT_SECONDS = 1.0
 
 
 def _guard_path() -> Path:
@@ -51,8 +52,36 @@ def _write_entries(path: Path, entries: list[dict[str, Any]]) -> None:
             os.unlink(temporary)
 
 
+def _acquire_lock(path: Path, timeout: float = _LOCK_TIMEOUT_SECONDS) -> tuple[int, Path] | None:
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + max(0.05, timeout)
+    while time.monotonic() < deadline:
+        try:
+            handle = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            try:
+                os.write(handle, str(os.getpid()).encode("ascii", "replace"))
+            except OSError:
+                os.close(handle)
+                lock_path.unlink(missing_ok=True)
+                return None
+            return handle, lock_path
+        except FileExistsError:
+            try:
+                if time.time() - lock_path.stat().st_mtime > 30:
+                    lock_path.unlink(missing_ok=True)
+                    continue
+            except OSError:
+                pass
+            time.sleep(0.01)
+        except OSError:
+            return None
+    return None
+
+
 def reserve_text_input(*, app_identity: str, window_class: str, state_hash: str,
-                       target_ref: str, text: str, now: float | None = None,
+                       target_ref: str, text: str, task_id: str = "",
+                       now: float | None = None,
                        ttl_seconds: int = INPUT_GUARD_TTL_SECONDS) -> bool:
     """Reserve a text injection signature, returning False for a recent replay.
 
@@ -64,15 +93,34 @@ def reserve_text_input(*, app_identity: str, window_class: str, state_hash: str,
     signature = _digest({
         "app": app_identity.casefold(),
         "class": window_class.casefold(),
-        "state": state_hash,
+        # Semantic/UIA state can change because of a caret, animation, or a
+        # status label. A task nonce keeps those changes from authorizing the
+        # same injection again while still allowing a later explicit task to
+        # enter the same text intentionally.
+        "task": task_id or state_hash,
         "target": target_ref,
         "text": text_hash,
     })
     path = _guard_path()
-    entries = [item for item in _read_entries(path)
-               if timestamp - float(item.get("at", 0)) < ttl_seconds]
-    if any(item.get("signature") == signature for item in entries):
+    lock = _acquire_lock(path)
+    if lock is None:
         return False
-    entries.append({"signature": signature, "text_hash": text_hash, "at": timestamp})
-    _write_entries(path, entries)
-    return True
+    handle, lock_path = lock
+    try:
+        entries = []
+        for item in _read_entries(path):
+            try:
+                if timestamp - float(item.get("at", 0)) < ttl_seconds:
+                    entries.append(item)
+            except (TypeError, ValueError):
+                continue
+        if any(item.get("signature") == signature for item in entries):
+            return False
+        entries.append({"signature": signature, "text_hash": text_hash, "at": timestamp})
+        _write_entries(path, entries)
+        return True
+    finally:
+        try:
+            os.close(handle)
+        finally:
+            lock_path.unlink(missing_ok=True)

@@ -17,9 +17,9 @@ from typing import Any
 DEPENDENCIES = (
     "Pillow>=10.0.0",
     "comtypes>=1.4.0",
-    "rapidocr-onnxruntime>=1.4.4",
+    "easyocr>=1.7",
 )
-MODULES = ("PIL", "comtypes", "rapidocr_onnxruntime")
+MODULES = ("PIL", "comtypes", "easyocr")
 STALE_SETUP_SECONDS = 900
 _PROCESS_STARTED_AT = time.time()
 
@@ -167,6 +167,16 @@ def start_environment_setup(confirmed: bool = False) -> dict[str, Any]:
     )
     _write_state({"status": "installing", "phase": "pip_install", "pid": process.pid})
     return environment_status()
+
+
+def install_dependencies() -> dict[str, Any]:
+    """Auto-install missing dependencies with confirmation bypass."""
+    return start_environment_setup(confirmed=True)
+
+
+def get_setup_status() -> dict[str, Any]:
+    """Poll current dependency installation status."""
+    return wait_environment_status(0)
 
 
 def run_worker() -> int:

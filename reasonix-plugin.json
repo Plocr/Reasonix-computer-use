@@ -1,18 +1,19 @@
 {
   "name": "computer-use",
-  "version": "0.8.0-alpha.12",
-  "description": "Reasonix-native Windows computer use with system index, UIA, local OCR and visual fallback",
+  "version": "0.8.0-beta.3",
+  "description": "Reasonix Computer Use — cross-platform desktop automation. Precision-first (UIA/AXAPI/AT-SPI2) with vision fallback (PaddleOCR), normalized coordinate protocol, and MCP tool suite.",
   "skills": "skills",
+  "agents": ["agents"],
   "commands": ["commands"],
   "hooks": {
     "SessionStart": [
-      {"command": "reasonix-computer-use.bat --hook", "description": "Inject compact Computer Use routing policy"}
+      {"command": "reasonix-computer-use.bat --hook", "description": "Declare explicit Computer Use activation"}
     ],
     "UserPromptSubmit": [
-      {"command": "reasonix-computer-use.bat --hook", "description": "Classify explicit desktop workflow requirements"}
+      {"command": "reasonix-computer-use.bat --hook", "description": "Activate only explicit run/operator tasks and clear ordinary prompts"}
     ],
     "PreToolUse": [
-      {"command": "reasonix-computer-use.bat --hook", "description": "Prevent Shell or Python from replacing explicit GUI steps"}
+      {"command": "reasonix-computer-use.bat --hook", "description": "Deny Computer Use outside an isolated active task"}
     ],
     "PostToolUse": [
       {"command": "reasonix-computer-use.bat --hook", "description": "Track Computer Use attempts without logging user content"}

@@ -7,13 +7,27 @@ import json
 import os
 import platform
 import tempfile
+import threading
 import time
 import uuid
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .system_profile import memory_dir, read_index
+from .services import memory_dir
+
+def __read_index():
+    """Read system index from disk, return {} if missing."""
+    import json
+    path = memory_dir() / "system-index.json"
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
 
 
 SCHEMA_VERSION = 1
@@ -28,6 +42,8 @@ SAFE_STRING_KEYS = {
 PATH_KEYS = {"path", "destination", "image_path", "file", "root", "cwd"}
 TEXT_KEYS = {"text", "value", "name", "title", "prompt", "goal", "clipboard", "query"}
 SECRET_MARKERS = ("password", "passwd", "secret", "token", "authorization", "cookie", "captcha", "验证码", "密码")
+_TRACE_CACHE: dict[str, dict[str, Any]] = {}
+_TRACE_LOCK = threading.RLock()
 
 
 def trace_dir() -> Path:
@@ -39,7 +55,7 @@ def _digest(value: str) -> str:
 
 
 def _known_folder_tokens() -> list[tuple[str, str]]:
-    index = read_index() or {}
+    index = _read_index() or {}
     result = []
     aliases = {"桌面": "desktop", "文档": "documents", "下载": "downloads",
                "图片": "pictures", "音乐": "music", "视频": "videos"}
@@ -94,12 +110,12 @@ def sanitize(value: Any, *, key: str = "", test_mode: bool = False, depth: int =
     return _redacted_text(str(value), test_mode=test_mode)
 
 
-def _atomic_json(path: Path, document: dict[str, Any]) -> None:
+def _atomic_bytes(path: Path, encoded: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
-        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(document, stream, ensure_ascii=False, separators=(",", ":"))
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(encoded)
             stream.flush()
         os.replace(temporary, path)
     finally:
@@ -107,8 +123,13 @@ def _atomic_json(path: Path, document: dict[str, Any]) -> None:
             os.unlink(temporary)
 
 
+def _atomic_json(path: Path, document: dict[str, Any]) -> None:
+    encoded = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    _atomic_bytes(path, encoded)
+
+
 def _environment() -> dict[str, Any]:
-    index = read_index() or {}
+    index = _read_index() or {}
     system = index.get("system", {})
     return {
         "platform": platform.system().casefold(),
@@ -146,6 +167,8 @@ def start_trace(kind: str = "computer-task", *, test_mode: bool = False,
         "events": [],
     }
     _atomic_json(trace_dir() / f"{trace_id}.json", document)
+    with _TRACE_LOCK:
+        _TRACE_CACHE[trace_id] = document
     record_event(trace_id, "task_start", {"metadata": metadata or {}})
     record_event(trace_id, "environment", _environment())
     _prune()
@@ -156,34 +179,49 @@ def read_trace(trace_id: str) -> dict[str, Any] | None:
     suffix = trace_id[2:] if trace_id.startswith("t-") else ""
     if not suffix or any(char not in "0123456789abcdef" for char in suffix):
         return None
+    with _TRACE_LOCK:
+        cached = _TRACE_CACHE.get(trace_id)
+        if cached is not None:
+            return deepcopy(cached)
     try:
         value = json.loads((trace_dir() / f"{trace_id}.json").read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else None
+        if isinstance(value, dict):
+            with _TRACE_LOCK:
+                _TRACE_CACHE[trace_id] = value
+            return deepcopy(value)
+        return None
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
 
 
 def record_event(trace_id: str, event: str, data: dict[str, Any] | None = None) -> bool:
-    document = read_trace(trace_id)
-    if not document:
-        return False
-    test_mode = bool(document.get("test_mode"))
-    item = {"event": event, "at": time.time(),
-            "data": sanitize(data or {}, test_mode=test_mode)}
-    events = document.setdefault("events", [])
-    events.append(item)
-    if len(events) > MAX_EVENTS:
-        del events[:len(events) - MAX_EVENTS]
-    document["updated_at"] = item["at"]
-    encoded = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    while len(encoded) > MAX_TRACE_BYTES and len(events) > 2:
-        del events[1]
+    with _TRACE_LOCK:
+        document = _TRACE_CACHE.get(trace_id)
+        if document is None:
+            document = read_trace(trace_id)
+        if not document:
+            return False
+        test_mode = bool(document.get("test_mode"))
+        item = {"event": event, "at": time.time(),
+                "data": sanitize(data or {}, test_mode=test_mode)}
+        events = document.setdefault("events", [])
+        events.append(item)
+        if len(events) > MAX_EVENTS:
+            del events[:len(events) - MAX_EVENTS]
+        document["updated_at"] = item["at"]
         encoded = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    _atomic_json(trace_dir() / f"{trace_id}.json", document)
-    return True
+        while len(encoded) > MAX_TRACE_BYTES and len(events) > 2:
+            del events[1]
+            encoded = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        _atomic_bytes(trace_dir() / f"{trace_id}.json", encoded)
+        _TRACE_CACHE[trace_id] = document
+        return True
 
 
 def finish_trace(trace_id: str, status: str, metrics: dict[str, Any] | None = None) -> bool:
+    document = read_trace(trace_id)
+    if document and document.get("events") and document["events"][-1].get("event") == "task_end":
+        return True
     return record_event(trace_id, "task_end", {"status": status, "metrics": metrics or {}})
 
 
