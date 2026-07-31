@@ -14,11 +14,13 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
 ]
-# Linux (X11) backend: XTEST input injection, X11 screenshot, AT-SPI2 UI tree.
+# Linux (X11) backend: XTEST input injection + X11 screenshot.
+# PyGObject (gi) is intentionally NOT listed: the pip build needs cairo/glib
+# dev headers; the standard way is the distro package python3-gi
+# (Ubuntu/Debian: python3-gi gir1.2-atspi-2.0).
 linux = [
     "python-xlib>=0.33",
     "mss>=9.0",
-    "PyGObject>=3.42",
 ]
 
 [build-system]
