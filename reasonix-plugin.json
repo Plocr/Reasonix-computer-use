@@ -1,7 +1,7 @@
 {
   "name": "computer-use",
-  "version": "0.8.0-beta.3",
-  "description": "Reasonix Computer Use — cross-platform desktop automation. Precision-first (UIA/AXAPI/AT-SPI2) with vision fallback (PaddleOCR), normalized coordinate protocol, and MCP tool suite.",
+  "version": "0.8.0-beta.5",
+  "description": "Reasonix Computer Use — cross-platform desktop automation. Precision-first (UIA/AXAPI/AT-SPI2) with vision fallback (EasyOCR), normalized coordinate protocol, and MCP tool suite.",
   "skills": "skills",
   "agents": ["agents"],
   "commands": ["commands"],

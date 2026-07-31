@@ -1,6 +1,6 @@
-# Reasonix Computer Use 0.8.0-beta.3
+# Reasonix Computer Use 0.8.0-beta.5
 
-Reasonix 跨平台桌面自动化插件。精准层优先（UIA/AXAPI/AT-SPI2），视觉层兜底（PaddleOCR PP-OCRv4），归一化坐标协议支持多模型通信。
+Reasonix 跨平台桌面自动化插件。精准层优先（UIA/AXAPI/AT-SPI2），视觉层兜底（EasyOCR），归一化坐标协议支持多模型通信。
 
 ## 架构
 
@@ -10,7 +10,7 @@ reasonix_computer_use/
 ├── platform/       — OS 抽象层 (Windows/macOS/Linux PlatformProvider)
 ├── perception/     — 精准层优先 + 视觉层兜底感知管道
 │   ├── precision/  — Windows UIA / macOS AXAPI / Linux AT-SPI2
-│   └── vision/     — PaddleOCR PP-OCRv4 + 可选 VL-1.6
+│   └── vision/     — EasyOCR + OpenCV 组件检测
 ├── services/       — 系统画像、Hook、Trace
 ├── tools/          — MCP 工具实现
 │   └── hidden/     — 鼠标/键盘/截图/录屏（归一化坐标强制）
@@ -66,7 +66,7 @@ Computer Use 默认关闭，需显式激活：
 精准层优先 → 视觉层兜底：
 
 1. **精准层**：Windows UIA (comtypes) / macOS AXAPI / Linux AT-SPI2
-2. **视觉层**：PaddleOCR PP-OCRv4（CPU，中文 95%+ 准确率）
+2. **视觉层**：EasyOCR（GPU 可用，中文 95%+ 准确率）
 3. **视觉层仅输出结构化坐标与文本**，不做决策。决策由宿主 Agent（VLM/LLM）完成。
 
 ## 安装
@@ -75,11 +75,19 @@ Computer Use 默认关闭，需显式激活：
 reasonix plugin install E:/Agent/reasonix-computer-use --link --replace --yes
 ```
 
-**依赖**：Pillow, comtypes, paddleocr, numpy（通过 pip 自动安装）
+**依赖**：Pillow, comtypes, easyocr（通过 pip 自动安装）
 
 ## 版本
 
-**0.8.0-beta.3** — 完整重构：
+**0.8.0-beta.5** — 审查修复与文档统一：
+
+- 修复 trace 链路崩溃（`_read_index` NameError）
+- 修复 drag 目标无效、revision 防过期缺失、annotated_image 语义
+- 修复 recorder 路径穿越、`shell:` 注入、Unicode 代理对输入
+- 重新接入 input_guard 防重放注入；非 Windows 平台 fail-fast
+- 测试套件：167 失败 → 0 失败（legacy 测试归档为 skip）
+
+**0.8.0-beta.4** — 完整重构：
 
 - 归一化坐标协议（CLAUDE_1024 / GEMINI_1000 / PIXEL / ELEMENT_REF）
 - 精准层优先 + 视觉层兜底感知架构
@@ -88,4 +96,4 @@ reasonix plugin install E:/Agent/reasonix-computer-use --link --replace --yes
 - 隐藏工具归一化坐标强制
 - 跨平台抽象层（Windows / macOS / Linux）
 - SystemProfiler 含 scale_factor
-- PaddleOCR PP-OCRv4 替换 RapidOCR
+- EasyOCR 替换 RapidOCR
