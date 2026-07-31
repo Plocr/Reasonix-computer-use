@@ -11,9 +11,9 @@ def test_imports():
     """All core modules must import without error."""
     modules = [
         "reasonix_computer_use.protocol.coordinates",
-        "reasonix_computer_use.platform.windows",
+        "reasonix_computer_use.platform.linux",
         "reasonix_computer_use.perception.router",
-        "reasonix_computer_use.perception.precision.windows_uia",
+        "reasonix_computer_use.perception.precision.linux_atspi",
         "reasonix_computer_use.perception.vision.easy_ocr",
         "reasonix_computer_use.services.system_profiler",
         "reasonix_computer_use.tools.screen_interactor",
@@ -23,6 +23,12 @@ def test_imports():
         "reasonix_computer_use.mcp_server",
         "reasonix_computer_use.environment_setup",
     ]
+    # Windows-only modules (ctypes.windll at module level) — only on win32
+    if sys.platform == "win32":
+        modules += [
+            "reasonix_computer_use.platform.windows",
+            "reasonix_computer_use.perception.precision.windows_uia",
+        ]
     for mod in modules:
         import importlib
         m = importlib.import_module(mod)

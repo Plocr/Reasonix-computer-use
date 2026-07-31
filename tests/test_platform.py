@@ -1,6 +1,9 @@
 """Pytest tests for platform module import and interface conformance."""
+import sys
+
 import pytest
-from reasonix_computer_use.platform import PlatformProvider, WindowsPlatformProvider, WindowInfo
+from reasonix_computer_use.platform import (
+    PlatformProvider, WindowsPlatformProvider, WindowInfo)
 
 
 def test_platform_provider_is_abstract():
@@ -9,12 +12,16 @@ def test_platform_provider_is_abstract():
     assert abc.ABC in PlatformProvider.__mro__
 
 
+@pytest.mark.skipif(sys.platform != "win32",
+                    reason="Windows-only provider")
 def test_windows_provider_instantiable():
     """WindowsPlatformProvider should be instantiable."""
     wp = WindowsPlatformProvider()
     assert wp._dpi_mode in ("per-monitor-v2", "per-monitor", "system", "unaware")
 
 
+@pytest.mark.skipif(sys.platform != "win32",
+                    reason="Windows-only provider")
 def test_windows_provider_has_all_methods():
     """WindowsPlatformProvider must implement all PlatformProvider methods."""
     required = {
@@ -44,6 +51,8 @@ def test_window_info_dataclass():
     assert wi.rect[2] - wi.rect[0] == 1000
 
 
+@pytest.mark.skipif(sys.platform != "win32",
+                    reason="Windows-only provider")
 def test_virtual_screen_rect():
     """Verify get_virtual_screen_rect returns a sensible best-fit rect."""
     wp = WindowsPlatformProvider()
@@ -55,6 +64,8 @@ def test_virtual_screen_rect():
     assert (bottom - top) <= 32768
 
 
+@pytest.mark.skipif(sys.platform != "win32",
+                    reason="Windows-only provider")
 def test_list_windows_returns_list():
     wp = WindowsPlatformProvider()
     windows = wp.list_windows()
@@ -65,3 +76,22 @@ def test_list_windows_returns_list():
         assert len(w.rect) == 4
         assert w.rect[2] > w.rect[0]
         assert w.rect[3] > w.rect[1]
+
+
+@pytest.mark.skipif(sys.platform != "linux",
+                    reason="Linux-only provider")
+def test_linux_provider_has_all_methods():
+    """LinuxPlatformProvider must implement all PlatformProvider methods."""
+    from reasonix_computer_use.platform import get_platform
+    plat = get_platform()
+    assert plat.__class__.__name__ == "LinuxPlatformProvider"
+    required = {
+        "mouse_move", "mouse_click", "mouse_drag", "mouse_scroll",
+        "keyboard_type", "keyboard_press", "keyboard_key_down", "keyboard_key_up",
+        "screenshot", "get_virtual_screen_rect",
+        "list_windows", "get_window_rect", "activate_window", "get_foreground_window",
+        "start_recording", "stop_recording",
+    }
+    for method_name in required:
+        assert hasattr(plat, method_name), f"Missing method: {method_name}"
+        assert callable(getattr(plat, method_name)), f"{method_name} is not callable"

@@ -12,11 +12,13 @@ Reasonix 跨平台桌面自动化插件（重构版）。**精准层优先（UIA
 | 平台 | 抽象层接口 | 精准层实现 | 视觉层 | 状态 |
 |---|---|---|---|---|
 | **Windows** | ✅ | ✅ UIA (comtypes) | ✅ EasyOCR | **已实现、可运行**（真实应用验证：QQ 音乐、QQ、Ollama Desktop、WPS 等） |
+| **Linux** (X11) | ✅ | ✅ AT-SPI2 (PyGObject) | ✅ EasyOCR | **已实现**：XTEST 输入注入、EWMH 窗口管理、mss 截图、x11grab 录屏、.desktop 应用发现、XDG 目录 |
+| Linux (Wayland) | ✅ | ⬜ 受限 | ✅ EasyOCR | 全局坐标/输入注入不可用，UI 树尽力可用，自动降级视觉层 |
 | macOS | ✅ | ⬜ AXAPI 占位 | ⬜ 待接入 | **架构就位，展示未开发** |
-| Linux | ✅ | ⬜ AT-SPI2 占位 | ⬜ 待接入 | **架构就位，展示未开发** |
 
 插件不是 Windows 专用——`platform/` 层为三平台定义了统一的 `PlatformProvider` 接口，
-macOS/Linux 的 AXAPI / AT-SPI2 精准层与视觉层实现已预留位置，待后续开发。
+Linux (X11) 已完整实现（与 Windows 同一套公共时序/协议代码），macOS 的 AXAPI 精准层
+与视觉层实现已预留位置，待后续开发。
 
 ## 架构
 
