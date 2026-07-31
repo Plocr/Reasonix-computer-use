@@ -18,6 +18,17 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from .base import PlatformProvider, WindowInfo
+from .common import (
+    CLICK_GAP,
+    FfmpegRecorder,
+    MAX_DURATION,
+    MOVE_SETTLE,
+    PRESS_HOLD,
+    SCROLL_SETTLE,
+    clamp_count,
+    drag_plan,
+    normalize_key_name,
+)
 
 
 # Pillow is imported lazily inside screenshot() to avoid blocking the entire
@@ -107,22 +118,16 @@ VK_MAP: dict = {
     "media_next": 0xB0, "media_prev": 0xB1, "media_stop": 0xB2,
     "media_play_pause": 0xB3,
     "shift": 0x10, "ctrl": 0x11, "alt": 0x12,
-    "win": 0x5B, "meta": 0x5B, "command": 0x5B, "option": 0x12,
+    "super": 0x5B, "win": 0x5B, "meta": 0x5B, "command": 0x5B, "option": 0x12,
     "f1": 0x70, "f2": 0x71, "f3": 0x72, "f4": 0x73,
     "f5": 0x74, "f6": 0x75, "f7": 0x76, "f8": 0x77,
     "f9": 0x78, "f10": 0x79, "f11": 0x7A, "f12": 0x7B,
 }
 
-# Populate modifier aliases (Modifier+Key combos are resolved at press time)
-MODIFIER_ALIASES = {
-    "control": "ctrl", "cmd": "win", "super": "win",
-    "opt": "alt", "altgr": "alt",
-}
-
 
 def _resolve_vk(name: str) -> int:
     """Resolve a key name to its virtual key code."""
-    key = MODIFIER_ALIASES.get(name.lower(), name.lower())
+    key = normalize_key_name(name)
     vk = VK_MAP.get(key)
     if vk is not None:
         return vk
@@ -259,8 +264,7 @@ class WindowsPlatformProvider(PlatformProvider):
 
     def __init__(self):
         self._dpi_mode = DPI_AWARENESS
-        self._recording_process: Optional[subprocess.Popen] = None
-        self._recording_output: Optional[Path] = None
+        self._recorder = FfmpegRecorder()
 
     # ── Mouse ────────────────────────────────────────────────────────────
 
@@ -284,18 +288,10 @@ class WindowsPlatformProvider(PlatformProvider):
         if button not in BUTTON_FLAGS:
             raise ValueError(f"Unknown button: {button}")
         down_flag, up_flag = BUTTON_FLAGS[button]
-        count = max(1, min(int(count), 10))
-
-        # Human-like click timing.  Self-drawn UIs (QQ Music, CEF apps, ...)
-        # misread machine-speed double clicks (previously 20ms hold / 50ms
-        # gap) as two single clicks.  Human double-click: ~60-100ms press
-        # hold, ~150-300ms gap, well inside the Windows double-click
-        # threshold (GetDoubleClickTime, default 500ms).
-        PRESS_HOLD = 0.06   # down -> up hold time
-        CLICK_GAP = 0.20    # interval between clicks of a multi-click
+        count = clamp_count(count)
 
         self.mouse_move(x, y)
-        time.sleep(0.03)
+        time.sleep(MOVE_SETTLE)
 
         for i in range(count):
             user32.mouse_event(down_flag, 0, 0, 0, 0)
@@ -307,7 +303,7 @@ class WindowsPlatformProvider(PlatformProvider):
                 time.sleep(CLICK_GAP)
 
         if duration:
-            time.sleep(min(duration, 5.0))
+            time.sleep(min(duration, MAX_DURATION))
 
     def mouse_drag(self, from_x: int, from_y: int,
                    to_x: int, to_y: int, duration: float = 0.5) -> None:
@@ -315,8 +311,7 @@ class WindowsPlatformProvider(PlatformProvider):
         to_x, to_y = int(to_x), int(to_y)
         button = "left"
         down_flag, up_flag = BUTTON_FLAGS[button]
-        duration = max(0.05, min(float(duration), 5.0))
-        steps = max(2, min(int(duration * 40), 60))
+        points, delay = drag_plan((from_x, from_y), (to_x, to_y), duration)
         pressed = False
 
         with _physical_pixel_context():
@@ -325,11 +320,8 @@ class WindowsPlatformProvider(PlatformProvider):
             try:
                 user32.mouse_event(down_flag, 0, 0, 0, 0)
                 pressed = True
-                time.sleep(0.03)
-                delay = duration / steps
-                for step in range(1, steps + 1):
-                    cx = from_x + (to_x - from_x) * step // steps
-                    cy = from_y + (to_y - from_y) * step // steps
+                time.sleep(MOVE_SETTLE)
+                for cx, cy in points:
                     if not user32.SetCursorPos(cx, cy):
                         raise ctypes.WinError()
                     time.sleep(delay)
@@ -341,13 +333,13 @@ class WindowsPlatformProvider(PlatformProvider):
                      direction: str = "vertical") -> None:
         x, y = int(x), int(y)
         self.mouse_move(x, y)
-        time.sleep(0.03)
+        time.sleep(MOVE_SETTLE)
 
         positive = direction in ("up", "right")
         delta = amount * 120 if positive else -amount * 120
         flag = MOUSEEVENTF_HWHEEL if direction in ("left", "right") else MOUSEEVENTF_WHEEL
         user32.mouse_event(flag, 0, 0, delta, 0)
-        time.sleep(0.05)
+        time.sleep(SCROLL_SETTLE)
 
     # ── Keyboard ─────────────────────────────────────────────────────────
 
@@ -515,61 +507,28 @@ class WindowsPlatformProvider(PlatformProvider):
 
     def start_recording(self, output_path: Path,
                         rect: Optional[Tuple[int, int, int, int]] = None) -> bool:
-        """Try system-native recording via FFmpeg gdigrab.
+        """Record the screen via FFmpeg gdigrab (Windows capture)."""
 
-        Falls back to FFmpeg gdigrab if available.
-        """
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        self._recording_output = output_path
-
-        # Build ffmpeg args — gdigrab uses -i desktop for full screen
-        args = [
-            "ffmpeg", "-y",
-            "-f", "gdigrab",
-            "-framerate", "15",
-        ]
-        if rect:
-            left, top, right, bottom = rect
-            args += [
-                "-offset_x", str(left),
-                "-offset_y", str(top),
-                "-video_size", f"{right - left}x{bottom - top}",
+        def args_builder(capture_rect):
+            args = [
+                "ffmpeg", "-y",
+                "-f", "gdigrab",
+                "-framerate", "15",
             ]
-        args += ["-i", "desktop", str(output_path)]
+            if capture_rect:
+                left, top, right, bottom = capture_rect
+                args += [
+                    "-offset_x", str(left),
+                    "-offset_y", str(top),
+                    "-video_size", f"{right - left}x{bottom - top}",
+                ]
+            args += ["-i", "desktop", str(output_path)]
+            return args
 
-        try:
-            self._recording_process = subprocess.Popen(
-                args,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            # Probe for immediate exit: gdigrab can fail right away (remote
-            # session, driver issues) while the process still reports success
-            # to us.  A ~0.6s grace period catches most instant failures.
-            try:
-                time.sleep(0.6)
-                if self._recording_process.poll() is not None:
-                    rc = self._recording_process.returncode
-                    self._recording_process = None
-                    return False
-            except OSError:
-                pass
-            return True
-        except FileNotFoundError:
-            # FFmpeg not available — can't record
-            return False
+        return self._recorder.start(output_path, args_builder, rect)
 
     def stop_recording(self) -> Optional[Path]:
-        if self._recording_process:
-            self._recording_process.terminate()
-            try:
-                self._recording_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._recording_process.kill()
-            self._recording_process = None
-            return self._recording_output
-        return None
+        return self._recorder.stop()
 
     # ── Internal helpers ─────────────────────────────────────────────────
 
