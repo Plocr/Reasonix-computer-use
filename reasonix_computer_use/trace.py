@@ -67,6 +67,16 @@ def _known_folder_tokens() -> list[tuple[str, str]]:
     return result
 
 
+def _path_basename(value: str) -> str:
+    """Filename part of a path with either '\\' or '/' separators.
+
+    Path(...).name is platform-separator-dependent (a Windows-style path
+    read on Linux yields the whole string), so split on both separators.
+    """
+    tail = value.rstrip("\\/")
+    return tail.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+
+
 def redact_path(value: str) -> str:
     normalized = os.path.normcase(value)
     for prefix, token in _known_folder_tokens():
@@ -78,12 +88,12 @@ def redact_path(value: str) -> str:
         if (len(normalized) > len(prefix)
                 and normalized[len(prefix)] in ("\\", "/")):
             sep = normalized[len(prefix)]
-            return token + sep + Path(value).name
+            return token + sep + _path_basename(value)
     home = os.path.normcase(str(Path.home()))
     if normalized == home or normalized.startswith(home + os.sep):
-        return "~" + (os.sep + Path(value).name if normalized != home else "")
+        return "~" + (os.sep + _path_basename(value) if normalized != home else "")
     if os.path.isabs(value):
-        return f"<external>{os.sep}{Path(value).name}"
+        return f"<external>{os.sep}{_path_basename(value)}"
     return value[:160]
 
 
