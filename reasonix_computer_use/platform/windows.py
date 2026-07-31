@@ -254,6 +254,21 @@ class WindowsPlatformProvider(PlatformProvider):
         KEYEVENTF_UNICODE = 0x0004
         KEYEVENTF_KEYUP = 0x0002
 
+        # The SDK INPUT union size is determined by its LARGEST member
+        # (MOUSEINPUT = 32 bytes on x64), not by KEYBDINPUT alone.  A union
+        # with only KEYBDINPUT (24 bytes) makes sizeof(INPUT)=32 instead of
+        # the required 40, and SendInput rejects the whole batch with 0
+        # injected events (a silent no-op before the return-value check).
+        class MOUSEINPUT(ctypes.Structure):
+            _fields_ = [
+                ("dx", wintypes.LONG),
+                ("dy", wintypes.LONG),
+                ("mouseData", wintypes.DWORD),
+                ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", ctypes.c_void_p),
+            ]
+
         class KEYBDINPUT(ctypes.Structure):
             _fields_ = [
                 ("wVk", wintypes.WORD),
@@ -263,14 +278,25 @@ class WindowsPlatformProvider(PlatformProvider):
                 ("dwExtraInfo", ctypes.c_void_p),
             ]
 
+        class HARDWAREINPUT(ctypes.Structure):
+            _fields_ = [
+                ("uMsg", wintypes.DWORD),
+                ("wParamL", wintypes.WORD),
+                ("wParamH", wintypes.WORD),
+            ]
+
         class INPUT_UNION(ctypes.Union):
-            _fields_ = [("ki", KEYBDINPUT)]
+            _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT),
+                        ("hi", HARDWAREINPUT)]
 
         class INPUT(ctypes.Structure):
             _fields_ = [
                 ("type", wintypes.DWORD),
                 ("union", INPUT_UNION),
             ]
+
+        assert ctypes.sizeof(INPUT) == 40, \
+            f"INPUT struct must be 40 bytes on x64, got {ctypes.sizeof(INPUT)}"
 
         def utf16_units(value: str):
             """Yield UTF-16 code units, expanding astral chars to surrogates."""
@@ -303,8 +329,23 @@ class WindowsPlatformProvider(PlatformProvider):
             sent = ctypes.windll.user32.SendInput(
                 len(inputs), inputs, ctypes.sizeof(INPUT))
             if sent != len(inputs):
+                try:
+                    last_error = ctypes.windll.kernel32.GetLastError()
+                except (AttributeError, OSError):
+                    last_error = None
+                # ERROR_ACCESS_DENIED (5) means the target window runs with a
+                # higher integrity level (e.g. elevated/admin) and UIPI blocked
+                # the injection; ERROR_INVALID_PARAMETER (87) means the INPUT
+                # layout is wrong.
+                hint = ""
+                if last_error == 5:
+                    hint = (" (UIPI: 目标窗口以管理员权限运行，键盘注入被系统拦截；"
+                            "请以管理员权限运行 Reasonix，或以普通权限启动目标应用)")
+                elif last_error == 87:
+                    hint = " (ERROR_INVALID_PARAMETER: INPUT 结构定义有误)"
                 raise OSError(
-                    f"SendInput injected {sent}/{len(inputs)} keyboard events")
+                    f"SendInput injected {sent}/{len(inputs)} keyboard events"
+                    f" (GetLastError={last_error}){hint}")
 
     def keyboard_press(self, keys: List[str]) -> None:
         """Press a key combination (e.g. ["CTRL", "C"]).

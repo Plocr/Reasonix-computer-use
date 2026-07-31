@@ -144,16 +144,35 @@ class ActionCommand:
         if "fallback" in d:
             fallback = NormalizedCoord.from_dict(d["fallback"])
 
-        # Support `key` (singular) as alias for `keys` — wrap string in list
+        # Support `key` (singular) as alias for `keys` — wrap string in list.
+        # Also accept comma/plus-separated combos like "Control+a" or
+        # "ctrl,shift,c" that host agents commonly emit.
         raw_keys = d.get("keys", d.get("key", []))
         if isinstance(raw_keys, str):
             raw_keys = [raw_keys]
+        if isinstance(raw_keys, list):
+            expanded: list[str] = []
+            for item in raw_keys:
+                if isinstance(item, str) and ("+" in item or "," in item):
+                    for part in item.replace(",", "+").split("+"):
+                        part = part.strip()
+                        if part:
+                            expanded.append(part)
+                elif item:
+                    expanded.append(str(item))
+            raw_keys = expanded
+
+        # Text aliases: `text` (canonical), `keyboard` and `value` are all
+        # accepted so agents using fill-style payloads do not silently type
+        # nothing (a silent no-op was the root cause of a "success" that
+        # never injected anything).
+        raw_text = d.get("text", d.get("keyboard", d.get("value", "")))
 
         return cls(
             type=action_type,
             element_ref=d.get("element_ref"),
             fallback=fallback,
-            text=str(d.get("text", "")),
+            text=str(raw_text),
             keys=raw_keys if isinstance(raw_keys, list) else [],
             amount=int(d.get("amount", 0)),
             duration=float(d.get("duration", 0.0)),

@@ -62,13 +62,24 @@ def _resolve_target(
     Priority: ELEMENT_REF → fallback normalized coord → current cursor.
     Never returns None — falls back to current cursor position.
     """
-    # 1. Try element ref against latest snapshot
+    # 1. Try element ref against latest snapshot.
+    #    A stale/unknown ref must NOT silently fall back to the window
+    #    center — that is how a click lands on the wrong control after the
+    #    UI changed (observed in QQ Music: e45 resolved to (780,524) instead
+    #    of the search box).  Surface the staleness to the host instead.
     if action.element_ref:
         el = snapshot.find_element(action.element_ref)
-        if el and el.bbox[2] > el.bbox[0]:
-            cx = (el.bbox[0] + el.bbox[2]) // 2
-            cy = (el.bbox[1] + el.bbox[3]) // 2
-            return (cx, cy)
+        if el is None:
+            raise ValueError(
+                f"element_ref '{action.element_ref}' no longer exists in the "
+                "latest snapshot (UI changed); call observe() again to get "
+                "fresh element IDs")
+        if el.bbox[2] <= el.bbox[0] or el.bbox[3] <= el.bbox[1]:
+            raise ValueError(
+                f"element_ref '{action.element_ref}' has an empty bounding box")
+        cx = (el.bbox[0] + el.bbox[2]) // 2
+        cy = (el.bbox[1] + el.bbox[3]) // 2
+        return (cx, cy)
 
     # 2. Try fallback normalized coordinate
     if action.fallback:
@@ -315,45 +326,49 @@ class ScreenInteractor:
 
         # ── Keyboard actions ──────────────────────────────────────────
         if cmd.type in ("type",):
-            if cmd.text:
-                # Cross-process replay guard: the same injection signature
-                # within the TTL window is blocked before any keystroke is
-                # sent (prevents a crashed/restarted task from re-injecting
-                # the same text blindly).
-                try:
-                    from ..input_guard import reserve_text_input
-                    from ..platform.windows import WindowsPlatformProvider
-                    fg = self._platform.get_foreground_window()
-                    window_class = ""
-                    if fg is not None and isinstance(self._platform, WindowsPlatformProvider):
-                        window_class = WindowsPlatformProvider._window_class(int(fg.id))
-                    # Persistent state hash: window identity (pid+title) plus
-                    # revision and batch position.  The pid/title part survives
-                    # process restarts so a crashed task cannot replay the same
-                    # injection after the MCP server restarts; the batch index
-                    # prevents two identical fields in one batch from being
-                    # mistaken for each other.
-                    app_identity = (fg.process_name if fg and fg.process_name
-                                    else (fg.title if fg else ""))
-                    state_hash = (f"{fg.process_id}:{fg.title}:rev{self._revision}"
-                                  if fg else f"rev{self._revision}")
-                    reserved = reserve_text_input(
-                        app_identity=app_identity,
-                        window_class=window_class,
-                        state_hash=state_hash,
-                        target_ref=str(cmd.element_ref or ""),
-                        text=cmd.text)
-                    if reserved is False:  # only a true replay blocks
-                        result = {"type": cmd.type, "status": "error",
-                                  "code": "input_replay_blocked",
-                                  "error": "检测到同一文本输入已被注入过；已阻止重放"}
-                        return result
-                    # None (guard infra failure) fails open by design.
-                except Exception:
-                    # Guard is best-effort; never block input on guard failure.
-                    pass
-                self._platform.keyboard_type(cmd.text)
-                result["text_length"] = len(cmd.text)
+            if not cmd.text:
+                return {"type": cmd.type, "status": "error",
+                        "code": "empty_text",
+                        "error": "type action requires non-empty text (use 'text', "
+                                 "'keyboard' or 'value' field)"}
+            # Cross-process replay guard: the same injection signature
+            # within the TTL window is blocked before any keystroke is
+            # sent (prevents a crashed/restarted task from re-injecting
+            # the same text blindly).
+            try:
+                from ..input_guard import reserve_text_input
+                from ..platform.windows import WindowsPlatformProvider
+                fg = self._platform.get_foreground_window()
+                window_class = ""
+                if fg is not None and isinstance(self._platform, WindowsPlatformProvider):
+                    window_class = WindowsPlatformProvider._window_class(int(fg.id))
+                # Persistent state hash: window identity (pid+title) plus
+                # revision and batch position.  The pid/title part survives
+                # process restarts so a crashed task cannot replay the same
+                # injection after the MCP server restarts; the batch index
+                # prevents two identical fields in one batch from being
+                # mistaken for each other.
+                app_identity = (fg.process_name if fg and fg.process_name
+                                else (fg.title if fg else ""))
+                state_hash = (f"{fg.process_id}:{fg.title}:rev{self._revision}"
+                              if fg else f"rev{self._revision}")
+                reserved = reserve_text_input(
+                    app_identity=app_identity,
+                    window_class=window_class,
+                    state_hash=state_hash,
+                    target_ref=str(cmd.element_ref or ""),
+                    text=cmd.text)
+                if reserved is False:  # only a true replay blocks
+                    result = {"type": cmd.type, "status": "error",
+                              "code": "input_replay_blocked",
+                              "error": "检测到同一文本输入已被注入过；已阻止重放"}
+                    return result
+                # None (guard infra failure) fails open by design.
+            except Exception:
+                # Guard is best-effort; never block input on guard failure.
+                pass
+            self._platform.keyboard_type(cmd.text)
+            result["text_length"] = len(cmd.text)
             return result
 
         if cmd.type in ("press", "press_key", "key", "submit", "enter"):
