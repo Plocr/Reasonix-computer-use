@@ -49,6 +49,9 @@ def get_platform() -> PlatformProvider:
     if sys.platform == "win32":
         from .windows import WindowsPlatformProvider
         return WindowsPlatformProvider()
+    if sys.platform == "linux":
+        from .linux import LinuxPlatformProvider
+        return LinuxPlatformProvider()
     if sys.platform == "darwin":
         return UnsupportedPlatformProvider("macOS")
     return UnsupportedPlatformProvider("Linux")
