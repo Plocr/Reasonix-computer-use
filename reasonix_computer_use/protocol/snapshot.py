@@ -106,6 +106,8 @@ class ActionCommand:
     keys: List[str] = field(default_factory=list)  # for "press" (key combos)
     amount: int = 0                         # for "scroll"
     duration: float = 0.0                   # for "drag" / "wait"
+    to_x: Optional[int] = None              # for "drag": destination x (physical px)
+    to_y: Optional[int] = None              # for "drag": destination y (physical px)
 
     def to_dict(self) -> dict:
         d: dict = {"type": self.type}
@@ -121,11 +123,22 @@ class ActionCommand:
             d["amount"] = self.amount
         if self.duration:
             d["duration"] = self.duration
+        if self.to_x is not None:
+            d["to_x"] = self.to_x
+        if self.to_y is not None:
+            d["to_y"] = self.to_y
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "ActionCommand":
         from .coordinates import NormalizedCoord
+
+        if not isinstance(d, dict):
+            raise ValueError(f"ActionCommand.from_dict expects a dict, got {type(d).__name__}")
+
+        action_type = d.get("type", "")
+        if not isinstance(action_type, str) or not action_type:
+            raise ValueError("ActionCommand requires a non-empty string 'type' field")
 
         fallback = None
         if "fallback" in d:
@@ -137,11 +150,13 @@ class ActionCommand:
             raw_keys = [raw_keys]
 
         return cls(
-            type=d["type"],
+            type=action_type,
             element_ref=d.get("element_ref"),
             fallback=fallback,
-            text=d.get("text", ""),
-            keys=raw_keys,
-            amount=d.get("amount", 0),
-            duration=d.get("duration", 0.0),
+            text=str(d.get("text", "")),
+            keys=raw_keys if isinstance(raw_keys, list) else [],
+            amount=int(d.get("amount", 0)),
+            duration=float(d.get("duration", 0.0)),
+            to_x=d.get("to_x"),
+            to_y=d.get("to_y"),
         )

@@ -75,7 +75,7 @@ def test_hook_trace_captures_failed_tool_and_task_end(monkeypatch, tmp_path):
 
     monkeypatch.setattr(route_guard, "_state_root", lambda: tmp_path / "hooks")
     monkeypatch.setattr(trace, "memory_dir", lambda: tmp_path / "memory")
-    monkeypatch.setattr(trace, "read_index", lambda: {})
+    monkeypatch.setattr(trace, "_read_index", lambda: {})
     session = "trace-task"
     route_guard.handle({"hook_event_name": "UserPromptSubmit", "session_id": session,
                         "prompt": "/computer-use:run 打开音乐应用播放歌曲"})
@@ -92,6 +92,7 @@ def test_hook_trace_captures_failed_tool_and_task_end(monkeypatch, tmp_path):
     assert document["events"][-1]["data"]["status"] == "blocked"
 
 
+@pytest.mark.skip(reason="legacy: runtime.WindowRegistry removed in 0.8.0-beta.4 refactor")
 def test_window_id_survives_registry_restart(monkeypatch):
     from reasonix_computer_use import runtime
     from reasonix_computer_use.windows import WindowInfo
@@ -106,6 +107,7 @@ def test_window_id_survives_registry_restart(monkeypatch):
     assert recovered.window_id == first.window_id
 
 
+@pytest.mark.skip(reason="legacy: runtime/system_index removed in 0.8.0-beta.4 refactor")
 def test_window_id_recovers_replaced_launcher_window(monkeypatch):
     from reasonix_computer_use import runtime, system_index
     from reasonix_computer_use.windows import WindowInfo
@@ -136,7 +138,7 @@ def test_trace_redacts_text_paths_and_secrets(monkeypatch, tmp_path):
     from reasonix_computer_use import trace
 
     monkeypatch.setattr(trace, "memory_dir", lambda: tmp_path)
-    monkeypatch.setattr(trace, "read_index", lambda: {"known_folders": {
+    monkeypatch.setattr(trace, "_read_index", lambda: {"known_folders": {
         "桌面": {"path": "F:\\桌面"}}})
     trace_id = trace.start_trace(metadata={"goal": "private goal"})
     trace.record_event(trace_id, "action", {
@@ -156,7 +158,7 @@ def test_trace_ring_keeps_fifty(monkeypatch, tmp_path):
     from reasonix_computer_use import trace
 
     monkeypatch.setattr(trace, "memory_dir", lambda: tmp_path)
-    monkeypatch.setattr(trace, "read_index", lambda: {})
+    monkeypatch.setattr(trace, "_read_index", lambda: {})
     for _ in range(55):
         trace.start_trace()
     assert len(trace.list_traces(60)) == 50
@@ -166,7 +168,7 @@ def test_trace_size_and_recording_overhead_gate(monkeypatch, tmp_path):
     from reasonix_computer_use import trace
 
     monkeypatch.setattr(trace, "memory_dir", lambda: tmp_path)
-    monkeypatch.setattr(trace, "read_index", lambda: {})
+    monkeypatch.setattr(trace, "_read_index", lambda: {})
     trace_id = trace.start_trace()
     elapsed = []
     for index in range(30):
@@ -187,7 +189,7 @@ def test_trace_export_requires_existing_trace(monkeypatch, tmp_path):
     from reasonix_computer_use import trace
 
     monkeypatch.setattr(trace, "memory_dir", lambda: tmp_path / "memory")
-    monkeypatch.setattr(trace, "read_index", lambda: {})
+    monkeypatch.setattr(trace, "_read_index", lambda: {})
     trace_id = trace.start_trace()
     target = tmp_path / "exports" / "trace.json"
     target.parent.mkdir()
@@ -309,6 +311,7 @@ def test_active_operator_fails_closed_when_tool_name_is_missing(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="legacy: domain_tools removed in 0.8.0-beta.4 refactor; trace contract covered by test_hook_* tests")
 async def test_computer_system_trace_contract(monkeypatch, tmp_path):
     from reasonix_computer_use import domain_tools, trace
 

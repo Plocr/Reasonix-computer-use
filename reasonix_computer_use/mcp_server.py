@@ -191,16 +191,12 @@ async def handle_tools_call(request_id: Any, params: dict[str, Any]) -> dict[str
         result = await tool["handler"](handler_arguments)
         result = _guard_visual_result(tool_name, result, arguments, vision_route)
         elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
-        try:
-            parsed_result = json.loads(result)
-            # Trace recording is handled by hooks/route_guard — no runtime REGISTRY needed
-        except (json.JSONDecodeError, OSError, ValueError, TypeError):
-            pass
         content = [{"type": "text", "text": result}]
-        if tool_name == "computer_state":
+        if tool_name in ("computer_state", "screen_interactor"):
             try:
                 parsed = json.loads(result)
-                image_path = (parsed.get("path") or parsed.get("image_path")) if parsed.get("status") == "ok" else None
+                image_path = (parsed.get("path") or parsed.get("image_path")
+                              or parsed.get("annotated_image")) if parsed.get("status") == "ok" else None
                 if image_path and _should_attach_image(parsed) and os.path.isfile(image_path):
                     with open(image_path, "rb") as image_file:
                         content.append({"type": "image", "mimeType": "image/png",
@@ -233,7 +229,10 @@ def _guard_visual_result(tool_name: str, result: str,
         parsed = json.loads(result)
     except (TypeError, json.JSONDecodeError):
         return result
-    if not isinstance(parsed, dict) or parsed.get("status") != "ok" or parsed.get("source") != "visual":
+    # Production perception providers report source="vision" (EasyOCR) or
+    # "precision" (UIA); "visual" is the legacy alias kept for old traces/tests.
+    if not isinstance(parsed, dict) or parsed.get("status") != "ok" \
+            or parsed.get("source") not in ("visual", "vision"):
         return result
     route = route or resolve_vision_route(base_dir=Path(__file__).parents[1])
     if route.mode == "native":
@@ -247,10 +246,11 @@ def _guard_visual_result(tool_name: str, result: str,
         # The configured vision tool needs the exact capture produced for this
         # revision.  Keep only the local path and geometry metadata; never
         # inline image bytes into the text fallback.
-        for key in ("image_path", "path", "image_hash", "visual_rect"):
+        for key in ("image_path", "path", "image_hash", "visual_rect", "annotated_image"):
             if parsed.get(key):
                 blocked[key] = parsed[key]
-        image_path = str(parsed.get("image_path") or parsed.get("path") or "")
+        image_path = str(parsed.get("image_path") or parsed.get("path")
+                         or parsed.get("annotated_image") or "")
         if image_path and route.server and route.tool:
             goal = str((arguments or {}).get("goal", "定位当前任务目标")).strip()[:300]
             blocked["handoff_request"] = {
@@ -273,7 +273,8 @@ def _guard_visual_result(tool_name: str, result: str,
 def _should_attach_image(result: dict[str, Any]) -> bool:
     """Only a host-declared native vision model receives MCP image content."""
     vision = result.get("vision", {})
-    return (result.get("status") == "ok" and result.get("source") == "visual"
+    return (result.get("status") == "ok"
+            and result.get("source") in ("visual", "vision")
             and isinstance(vision, dict) and vision.get("mode") == "native")
 
 

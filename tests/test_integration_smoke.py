@@ -27,7 +27,6 @@ def test_imports():
         import importlib
         m = importlib.import_module(mod)
         print(f"  OK: {mod} ({m.__name__})")
-    return True
 
 def test_platform_interface():
     """PlatformProvider must expose all required methods."""
@@ -96,7 +95,7 @@ def test_action_types():
     print(f"  OK: {len(ALL_ACTIONS)} action types recognized")
 
 if __name__ == "__main__":
-    print("Computer Use Integration Test v0.8.0-beta.3\n")
+    print("Computer Use Integration Test v0.8.0-beta.4\n")
     test_imports()
     test_platform_interface()
     test_screen_interactor_interface()

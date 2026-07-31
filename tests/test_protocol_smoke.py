@@ -34,10 +34,14 @@ class TestCoordinateConverter:
         assert nc.space == CoordinateSpace.CLAUDE_1024
 
     def test_scale_factor_conversion(self):
+        # display_width/height are physical pixels from DPI-aware APIs.
+        # scale_factor is informational only; coordinates map within
+        # the physical viewport without additional scaling.
         converter = CoordinateConverter(scale_factor=1.5, display_width=1920, display_height=1080)
         nc = NormalizedCoord(x=512, y=384, space=CoordinateSpace.CLAUDE_1024)
         px, py = converter.to_physical(nc)
-        assert (px, py) == (1440, 810)
+        # 512/1024 * 1920 = 960, 384/768 * 1080 = 540
+        assert (px, py) == (960, 540)
 
     def test_claude_1024_bounds(self):
         """Corners of the CLAUDE_1024 space (canonical 1024×768, display 1920×1080)."""

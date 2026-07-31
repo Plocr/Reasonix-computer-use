@@ -141,8 +141,12 @@ class ComputerSystem:
     async def command(self, cmd: str) -> dict:
         """Run a single read-only diagnostic command.
 
-        Restricted to safe commands only. No shell pipelines or redirects.
+        Restricted to safe commands only. No shell pipelines, redirects,
+        or metacharacters that could chain arbitrary commands.
         """
+        import re as _re
+        import shlex
+
         # Whitelist of safe read-only commands
         safe_commands = {
             "ver", "set", "whoami", "hostname",
@@ -151,11 +155,31 @@ class ComputerSystem:
             "systeminfo", "tasklist",
         }
 
-        parts = cmd.strip().split()
-        if not parts:
+        raw = cmd.strip()
+        if not raw:
             return {"status": "error", "error": "empty command"}
 
-        base = parts[0].lower().rstrip(".exe")
+        # Reject shell metacharacters that enable command chaining/injection
+        if _re.search(r'[|&;><`\$\(\)!{}]', raw):
+            return {
+                "status": "blocked",
+                "code": "unsafe_command",
+                "message": "Command contains shell metacharacters; "
+                           "pipelines, redirects, and chaining are not allowed",
+            }
+
+        # Parse into tokens — each token must be a simple word
+        try:
+            tokens = shlex.split(raw, posix=False)
+        except ValueError:
+            return {"status": "error", "error": "command could not be parsed safely"}
+
+        if not tokens:
+            return {"status": "error", "error": "empty command"}
+
+        base = tokens[0].lower()
+        if base.endswith(".exe"):
+            base = base[:-4]
         if base not in safe_commands:
             return {
                 "status": "blocked",
@@ -165,7 +189,7 @@ class ComputerSystem:
 
         try:
             result = subprocess.run(
-                cmd, shell=True,
+                tokens, shell=False,
                 capture_output=True, text=True,
                 timeout=30,
             )
@@ -177,6 +201,8 @@ class ComputerSystem:
             }
         except subprocess.TimeoutExpired:
             return {"status": "error", "error": "command timed out"}
+        except FileNotFoundError:
+            return {"status": "error", "error": f"command not found: {tokens[0]}"}
 
     # ── File ───────────────────────────────────────────────────────────────
 
@@ -215,7 +241,14 @@ class ComputerSystem:
                 "message": f"Known Folder '{folder}' not found or inaccessible",
             }
 
-        pattern = os.path.join(folder_path, f"*{query}*")
+        import re as _re
+        # Sanitize query: escape glob metacharacters to prevent injection
+        safe_query = _re.sub(r'[\[\]?{}*\\]', '', query).strip()
+        if not safe_query:
+            return {"status": "error", "code": "empty_query",
+                    "message": "Query is empty after sanitization"}
+
+        pattern = os.path.join(folder_path, f"*{safe_query}*")
         matches = _glob.glob(pattern, recursive=False)[:20]
 
         return {

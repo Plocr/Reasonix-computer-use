@@ -102,6 +102,25 @@ class HiddenKeyboard:
 class HiddenScreenshot:
     """Screenshot capture — saves to user Downloads directory."""
 
+    _RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", "CLOCK$",
+                       *(f"COM{i}" for i in range(1, 10)),
+                       *(f"LPT{i}" for i in range(1, 10))}
+
+    @staticmethod
+    def _sanitize_filename(name: str, suffix: str) -> str:
+        """Strip path separators, control chars and Windows reserved names."""
+        import re
+        name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '_', name).strip()
+        stem = name.split(".")[0].upper()
+        if stem in HiddenScreenshot._RESERVED_NAMES:
+            name = "_" + name
+        if not name:
+            import time
+            name = f"file_{time.strftime('%Y%m%d_%H%M%S')}"
+        if not name.endswith(suffix):
+            name += suffix
+        return name
+
     def __init__(self):
         self._platform = get_platform()
         self._output_dir = self._resolve_output_dir()
@@ -117,22 +136,21 @@ class HiddenScreenshot:
 
     def capture(self, filename: Optional[str] = None) -> dict:
         """Capture full screen and save to Downloads."""
-        import time, re
+        import time
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
         if filename is None:
             filename = f"screenshot_{time.strftime('%Y%m%d_%H%M%S')}.png"
         else:
-            # Sanitize: remove path separators, allow only safe chars
-            filename = re.sub(r'[\\/:*?"<>|]', '_', filename)
-            if not filename.endswith('.png'):
-                filename += '.png'
+            filename = self._sanitize_filename(filename, ".png")
 
         path = (self._output_dir / filename).resolve()
-        # Ensure path stays within output_dir
-        if not str(path).startswith(str(self._output_dir.resolve())):
+        # Ensure path stays within output_dir (prefix matching would accept
+        # sibling directories like Downloads_evil — use relative containment)
+        try:
+            path.relative_to(self._output_dir.resolve())
+        except ValueError:
             return {"status": "error", "error": "invalid filename"}
-        img = self._platform.screenshot()
         img = self._platform.screenshot()
         img.save(str(path))
 
@@ -159,8 +177,16 @@ class HiddenScreenRecorder:
 
         if filename is None:
             filename = f"recording_{time.strftime('%Y%m%d_%H%M%S')}"
+        else:
+            filename = HiddenScreenshot._sanitize_filename(filename, ".mp4")
+            filename = filename[:-4] if filename.endswith(".mp4") else filename
 
-        path = self._output_dir / f"{filename}.mp4"
+        path = (self._output_dir / f"{filename}.mp4").resolve()
+        # Ensure path stays within output_dir
+        try:
+            path.relative_to(self._output_dir.resolve())
+        except ValueError:
+            return {"status": "error", "error": "invalid filename"}
         ok = self._platform.start_recording(path)
 
         return {

@@ -374,6 +374,8 @@ async def test_mcp_static_visual_default_does_not_prove_live_call_model(monkeypa
     assert [item["type"] for item in result["result"]["content"]] == ["text"]
 
 
+@pytest.mark.skip(reason="legacy: domain_tools/runtime removed in 0.8.0-beta.4 refactor; "
+                         "fail-closed behavior covered by the vision_router tests above")
 @pytest.mark.asyncio
 async def test_unavailable_route_stops_before_window_capture(monkeypatch):
     from reasonix_computer_use import domain_tools

@@ -7,8 +7,8 @@ Coordinate spaces:
   - PIXEL:        raw physical pixels (requires resolution context)
   - ELEMENT_REF:  element ID reference (most stable; preferred for text-only LLMs)
 
-All conversion honours the display scale_factor from system-index.json so
-coordinates from any model land on the correct physical screen position.
+All conversion uses the physical display dimensions from system-index.json;
+scale_factor is carried for host Agent reference only.
 """
 
 from __future__ import annotations
@@ -174,20 +174,21 @@ class CoordinateConverter:
             )
 
         if coord.space == CoordinateSpace.PIXEL:
-            # PIXEL coordinates are already physical — just apply scale_factor
-            return (round(coord.x * self.scale_factor),
-                    round(coord.y * self.scale_factor))
+            # PIXEL coordinates are already physical — no scaling needed
+            return (int(coord.x), int(coord.y))
 
         # Determine the target viewport in physical pixels
         if window_rect is not None:
             left, top, right, bottom = window_rect
-            vw = (right - left) * self.scale_factor
-            vh = (bottom - top) * self.scale_factor
-            origin_x = left * self.scale_factor
-            origin_y = top * self.scale_factor
+            # window_rect from DPI-aware APIs is already physical pixels
+            vw = right - left
+            vh = bottom - top
+            origin_x = left
+            origin_y = top
         else:
-            vw = self.display_width * self.scale_factor
-            vh = self.display_height * self.scale_factor
+            # display_width/height from system-index.json are already physical
+            vw = self.display_width
+            vh = self.display_height
             origin_x = 0
             origin_y = 0
 
@@ -214,22 +215,23 @@ class CoordinateConverter:
             raise ValueError("ELEMENT_REF is not a coordinate space")
 
         if space == CoordinateSpace.PIXEL:
+            # PIXEL is physical — no conversion needed
             return NormalizedCoord(
-                x=round(px / self.scale_factor),
-                y=round(py / self.scale_factor),
+                x=int(px),
+                y=int(py),
                 space=CoordinateSpace.PIXEL,
             )
 
-        # Determine viewport
+        # Determine viewport (physical pixels — no scale_factor needed)
         if window_rect is not None:
             left, top, right, bottom = window_rect
-            vw = (right - left) * self.scale_factor
-            vh = (bottom - top) * self.scale_factor
-            origin_x = left * self.scale_factor
-            origin_y = top * self.scale_factor
+            vw = right - left
+            vh = bottom - top
+            origin_x = left
+            origin_y = top
         else:
-            vw = self.display_width * self.scale_factor
-            vh = self.display_height * self.scale_factor
+            vw = self.display_width
+            vh = self.display_height
             origin_x = 0
             origin_y = 0
 

@@ -18,6 +18,7 @@ ELEMENT_REF).  Conversion to physical pixels happens internally.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict, List, Optional
 
 from ..protocol import (
@@ -75,11 +76,14 @@ def _resolve_target(
         window_rect = fg.rect if fg else None
         return converter.to_physical(action.fallback, window_rect=window_rect)
 
-    # 3. Ultimate fallback: current cursor position (don't crash)
-    import ctypes
-    pt = ctypes.wintypes.POINT()
-    ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
-    return (int(pt.x), int(pt.y))
+    # 3. Ultimate fallback: center of foreground window (cross-platform safe)
+    fg = platform.get_foreground_window()
+    if fg and fg.rect[2] > fg.rect[0]:
+        cx = (fg.rect[0] + fg.rect[2]) // 2
+        cy = (fg.rect[1] + fg.rect[3]) // 2
+        return (cx, cy)
+    # Last resort: origin — action will land at (0,0) rather than crash
+    return (0, 0)
 
 
 # ── screen_interactor tool ──────────────────────────────────────────────────
@@ -130,12 +134,16 @@ class ScreenInteractor:
         self._latest_snapshot = snapshot
         snapshot.revision = self._revision
 
-        # Get annotated image path from EasyOCR if available
-        try:
-            from ..perception.vision.easy_ocr import _last_annotated
-            self._annotated_image = _last_annotated
-        except ImportError:
-            pass
+        # Get annotated image path from EasyOCR only when vision was used.
+        # Precision snapshots must not carry a stale screenshot from an
+        # earlier vision observation.
+        self._annotated_image = None
+        if snapshot.source == "vision":
+            try:
+                from ..perception.vision.easy_ocr import _last_annotated
+                self._annotated_image = _last_annotated
+            except ImportError:
+                pass
 
         return {
             "status": "ok",
@@ -192,6 +200,19 @@ class ScreenInteractor:
         # Refresh converter
         self._converter = CoordinateConverter.from_system_index()
 
+        # Staleness detection: if the host claims a snapshot revision, refuse
+        # to act on an older snapshot.  The host must re-observe first.
+        if revision is not None:
+            try:
+                expected = int(revision)
+            except (TypeError, ValueError):
+                return {"status": "error", "code": "invalid_revision",
+                        "message": f"revision must be an integer, got {revision!r}"}
+            if self._latest_snapshot is None or self._revision != expected:
+                return {"status": "error", "code": "stale_revision",
+                        "message": (f"snapshot revision {self._revision} does not match "
+                                     f"expected {expected}; call observe() again before executing")}
+
         results: List[dict] = []
         blocked = False
         blocked_reason = ""
@@ -223,6 +244,8 @@ class ScreenInteractor:
         try:
             self._revision += 1
             snap = self._router.observe(max_elements=30)
+            snap.revision = self._revision
+            self._latest_snapshot = snap  # keep revision ↔ snapshot consistent
             response["after"] = {
                 "revision": self._revision,
                 "window_id": snap.window_id,
@@ -278,14 +301,14 @@ class ScreenInteractor:
             elif cmd.type == "hover" or cmd.type == "move":
                 self._platform.mouse_move(x, y)
             elif cmd.type == "drag":
-                # Drag: use element_ref for start, extra keys/amount for delta
+                # Drag: element_ref/fallback resolves the start point;
+                # to_x/to_y (physical pixels) resolve the destination.
                 to_x = x + 50
                 to_y = y + 50  # default small drag
-                raw = cmd.to_dict() if hasattr(cmd, 'to_dict') else {}
-                if 'to_x' in raw:
-                    to_x = int(raw['to_x'])
-                if 'to_y' in raw:
-                    to_y = int(raw['to_y'])
+                if cmd.to_x is not None:
+                    to_x = int(cmd.to_x)
+                if cmd.to_y is not None:
+                    to_y = int(cmd.to_y)
                 self._platform.mouse_drag(x, y, to_x, to_y, duration=cmd.duration or 0.3)
                 result["drag_to"] = [to_x, to_y]
             return result
@@ -293,6 +316,42 @@ class ScreenInteractor:
         # ── Keyboard actions ──────────────────────────────────────────
         if cmd.type in ("type",):
             if cmd.text:
+                # Cross-process replay guard: the same injection signature
+                # within the TTL window is blocked before any keystroke is
+                # sent (prevents a crashed/restarted task from re-injecting
+                # the same text blindly).
+                try:
+                    from ..input_guard import reserve_text_input
+                    from ..platform.windows import WindowsPlatformProvider
+                    fg = self._platform.get_foreground_window()
+                    window_class = ""
+                    if fg is not None and isinstance(self._platform, WindowsPlatformProvider):
+                        window_class = WindowsPlatformProvider._window_class(int(fg.id))
+                    # Persistent state hash: window identity (pid+title) plus
+                    # revision and batch position.  The pid/title part survives
+                    # process restarts so a crashed task cannot replay the same
+                    # injection after the MCP server restarts; the batch index
+                    # prevents two identical fields in one batch from being
+                    # mistaken for each other.
+                    app_identity = (fg.process_name if fg and fg.process_name
+                                    else (fg.title if fg else ""))
+                    state_hash = (f"{fg.process_id}:{fg.title}:rev{self._revision}"
+                                  if fg else f"rev{self._revision}")
+                    reserved = reserve_text_input(
+                        app_identity=app_identity,
+                        window_class=window_class,
+                        state_hash=state_hash,
+                        target_ref=str(cmd.element_ref or ""),
+                        text=cmd.text)
+                    if reserved is False:  # only a true replay blocks
+                        result = {"type": cmd.type, "status": "error",
+                                  "code": "input_replay_blocked",
+                                  "error": "检测到同一文本输入已被注入过；已阻止重放"}
+                        return result
+                    # None (guard infra failure) fails open by design.
+                except Exception:
+                    # Guard is best-effort; never block input on guard failure.
+                    pass
                 self._platform.keyboard_type(cmd.text)
                 result["text_length"] = len(cmd.text)
             return result
@@ -336,7 +395,8 @@ class ScreenInteractor:
         if cmd.type == "screenshot":
             import tempfile
             img = self._platform.screenshot()
-            path = tempfile.mktemp(suffix=".png", prefix="screen_")
+            fd, path = tempfile.mkstemp(suffix=".png", prefix="screen_")
+            os.close(fd)
             img.save(path)
             result["path"] = path
             return result

@@ -142,7 +142,7 @@ def _physical_pixel_context():
     try:
         yield
     finally:
-        if previous:
+        if previous is not None:
             try:
                 user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(previous))
             except (AttributeError, OSError):
@@ -241,7 +241,12 @@ class WindowsPlatformProvider(PlatformProvider):
     # ── Keyboard ─────────────────────────────────────────────────────────
 
     def keyboard_type(self, text: str) -> None:
-        """Type raw Unicode text via SendInput."""
+        """Type raw Unicode text via SendInput.
+
+        Handles UTF-16 surrogate pairs (emoji, CJK extension B, ...) and
+        splits long text into batches because SendInput accepts at most
+        65536 input events per call.
+        """
         if not text:
             return
         import ctypes
@@ -249,16 +254,13 @@ class WindowsPlatformProvider(PlatformProvider):
         KEYEVENTF_UNICODE = 0x0004
         KEYEVENTF_KEYUP = 0x0002
 
-        class KBDLLHOOKSTRUCT(ctypes.Structure):
-            _fields_ = [("flags", wintypes.DWORD)]
-
         class KEYBDINPUT(ctypes.Structure):
             _fields_ = [
                 ("wVk", wintypes.WORD),
                 ("wScan", wintypes.WORD),
                 ("dwFlags", wintypes.DWORD),
                 ("time", wintypes.DWORD),
-                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+                ("dwExtraInfo", ctypes.c_void_p),
             ]
 
         class INPUT_UNION(ctypes.Union):
@@ -270,18 +272,39 @@ class WindowsPlatformProvider(PlatformProvider):
                 ("union", INPUT_UNION),
             ]
 
-        # Build INPUT array: each char needs key-down + key-up
-        inputs = (INPUT * (len(text) * 2))()
-        for i, ch in enumerate(text):
-            for j, flags in enumerate((KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP)):
-                inputs[i * 2 + j].type = INPUT_KEYBOARD
-                inputs[i * 2 + j].union.ki.wVk = 0
-                inputs[i * 2 + j].union.ki.wScan = ord(ch)
-                inputs[i * 2 + j].union.ki.dwFlags = flags
-                inputs[i * 2 + j].union.ki.time = 0
-                inputs[i * 2 + j].union.ki.dwExtraInfo = ctypes.c_void_p(0)
+        def utf16_units(value: str):
+            """Yield UTF-16 code units, expanding astral chars to surrogates."""
+            for ch in value:
+                code = ord(ch)
+                if code <= 0xFFFF:
+                    yield code
+                else:
+                    code -= 0x10000
+                    yield 0xD800 + (code >> 10)
+                    yield 0xDC00 + (code & 0x3FF)
 
-        ctypes.windll.user32.SendInput(len(inputs), inputs, ctypes.sizeof(INPUT))
+        units = list(utf16_units(text))
+        # SendInput caps at 65536 INPUT events; keep well under that per call.
+        max_events_per_call = 2000  # 1000 code units → 2000 events (down+up)
+        for offset in range(0, len(units), max_events_per_call // 2):
+            chunk = units[offset:offset + max_events_per_call // 2]
+            inputs = (INPUT * (len(chunk) * 2))()
+            for i, code in enumerate(chunk):
+                for j, flags in enumerate((KEYEVENTF_UNICODE,
+                                           KEYEVENTF_UNICODE | KEYEVENTF_KEYUP)):
+                    slot = inputs[i * 2 + j]
+                    slot.type = INPUT_KEYBOARD
+                    slot.union.ki.wVk = 0
+                    slot.union.ki.wScan = code
+                    slot.union.ki.dwFlags = flags
+                    slot.union.ki.time = 0
+                    slot.union.ki.dwExtraInfo = None
+
+            sent = ctypes.windll.user32.SendInput(
+                len(inputs), inputs, ctypes.sizeof(INPUT))
+            if sent != len(inputs):
+                raise OSError(
+                    f"SendInput injected {sent}/{len(inputs)} keyboard events")
 
     def keyboard_press(self, keys: List[str]) -> None:
         """Press a key combination (e.g. ["CTRL", "C"]).
@@ -417,14 +440,14 @@ class WindowsPlatformProvider(PlatformProvider):
 
     def start_recording(self, output_path: Path,
                         rect: Optional[Tuple[int, int, int, int]] = None) -> bool:
-        """Try system-native recording via Windows.Graphics.Capture API via ffmpeg.
+        """Try system-native recording via FFmpeg gdigrab.
 
         Falls back to FFmpeg gdigrab if available.
         """
         output_path.parent.mkdir(parents=True, exist_ok=True)
         self._recording_output = output_path
 
-        # Use FFmpeg with gdigrab (Windows Graphics Device Interface capture)
+        # Build ffmpeg args — gdigrab uses -i desktop for full screen
         args = [
             "ffmpeg", "-y",
             "-f", "gdigrab",
@@ -437,33 +460,7 @@ class WindowsPlatformProvider(PlatformProvider):
                 "-offset_y", str(top),
                 "-video_size", f"{right - left}x{bottom - top}",
             ]
-        else:
-            args += ["-i", "desktop"]
-            # desktop input after -i for full screen
-            args.insert(args.index("desktop") - 1, "-i")
-
-        # Fix the args — gdigrab uses -i desktop
-        if not rect:
-            # Full desktop capture
-            args = [
-                "ffmpeg", "-y",
-                "-f", "gdigrab",
-                "-framerate", "15",
-                "-i", "desktop",
-                str(output_path),
-            ]
-        else:
-            left, top, right, bottom = rect
-            args = [
-                "ffmpeg", "-y",
-                "-f", "gdigrab",
-                "-framerate", "15",
-                "-offset_x", str(left),
-                "-offset_y", str(top),
-                "-video_size", f"{right - left}x{bottom - top}",
-                "-i", "desktop",
-                str(output_path),
-            ]
+        args += ["-i", "desktop", str(output_path)]
 
         try:
             self._recording_process = subprocess.Popen(

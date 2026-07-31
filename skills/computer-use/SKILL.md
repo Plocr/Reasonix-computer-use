@@ -18,10 +18,47 @@ allowed-tools: [screen_interactor, computer_system, computer_app, ask]
 
 ## 执行流程
 
-1. **启动应用** — 按优先级：
-   - **首选**：`computer_app(operation="launch", query="应用名")`。插件启动时已生成系统画像（`memory/system-index.json`），`launch` 自动从中查找精确安装路径后启动。
-   - **画像未命中**：调 `computer_app(operation="search", query="应用名")` 触发实时重扫并更新画像记忆，然后重试 `launch`。
-   - **仍未找到**：可使用 `screen_interactor(execute)` 按键 `Win`（`press` → `keys: ["win"]`）打开开始菜单，再 `type` 输入应用名搜索。这是最后手段。
+**核心流程：先读记忆 → 再分析 → 再执行 → 后验证。绝不在分析前做任何操作。**
+
+### 第零步：读取系统记忆（必须首先执行，禁止跳过）
+
+**⚠️ 严格禁止调用 `computer_system(operation="profile")` 重新生成画像——画像已存在！**
+
+读取插件记忆目录中的系统画像文件，了解已安装应用和系统环境：
+
+1. 读取 `memory/system.md` — 获取硬件摘要、已安装应用列表、常用目录
+2. 读取 `memory/system-index.json` — 获取应用精确路径、Known Folders、显示器信息
+
+从记忆中找到与任务相关的应用名称和路径。如果记忆文件不存在或缺少目标应用，
+使用 `computer_app(operation="search")` 重新扫描。
+
+**降级策略（按顺序尝试）**：
+1. 记忆中有目标应用 → `computer_app(launch, query="应用名")`
+2. 记忆中没有 → `computer_app(search, query="应用名")`
+3. 搜索也找不到 → `press` + `keys: ["win"]` 打开开始菜单，然后 `type` 搜索
+4. 系统中确实没有 → 考虑用浏览器打开网页版
+
+### 第一步：任务分析
+
+拿到指令后，**必先拆解为原子步骤**，列清单，再动手。
+
+| 用户指令 | 拆分步骤 |
+|---|---|
+| "放首歌" | ① 查系统画像找音乐软件 → ② 有则启动/无则开浏览器 → ③ observe → ④ 搜索框输入 → ⑤ 点播放 |
+| "QQ换主题" | ① 启动QQ → ② 登录 → ③ observe → ④ 找设置 → ⑤ 个性化 → ⑥ 选主题色 |
+| "截图保存" | ① observe → ② 隐藏工具截图 → ③ 验证文件 |
+
+### 第二步：执行
+
+按分析好的步骤逐步执行，每步一个原子操作：
+
+- **启动应用** — 按优先级：① `computer_app(launch)`→画像解析 ② `computer_app(search)`→重扫 ③ `press:["win"]`→type 搜索
+- **观察** — `screen_interactor(mode="observe")` 获取元素
+- **操作** — `screen_interactor(mode="execute", actions=[{element_ref, type}])`
+
+### 第三步：验证
+
+操作后检查 `after` 快照的 `element_count` 变化确认生效。`blocked=true` 时停止汇报。
 2. **观察** — `screen_interactor(mode="observe", window_id=...)` 获取 `ScreenSnapshot`。每个元素有唯一 `id`（如 `e1`、`eocr_t0`）、`role`、`text`、`bbox`。
 3. **操作** — `screen_interactor(mode="execute", actions=[...])`。每条指令优先使用 `element_ref`（元素 ID），`fallback` 为归一化坐标。
 4. **验证** — 操作后 observe 的 `after` 字段自动包含最新状态快照。
@@ -63,6 +100,9 @@ allowed-tools: [screen_interactor, computer_system, computer_app, ask]
 | `press` | 按键组合 | `keys: ["CTRL", "C"]` 或 `key: "Enter"` |
 | `scroll` | 滚动 | `amount`（正=下/右，负=上/左） |
 | `wait` | 等待 | `duration`（秒） |
+
+**⚠️ 常见错误**：`hotkey`、`shortcut`、`keycombo` 等都不是有效动作类型。
+打开开始菜单用 `press` + `keys: ["win"]`，搜索用 `press` + `keys: ["win", "s"]`。
 
 ## 安全边界
 

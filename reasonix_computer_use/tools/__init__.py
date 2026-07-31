@@ -1,4 +1,4 @@
-"""Register the Reasonix Computer Use MCP tools (v0.8.0-beta.3).
+"""Register the Reasonix Computer Use MCP tools (v0.8.0-beta.5).
 
 Public tools (exposed to the host Agent):
   - screen_interactor  — Core tool: observe screens + execute actions
@@ -16,7 +16,7 @@ Legacy aliases (backward compatible):
 
 from ..mcp_server import TOOLS, register_tool
 
-# Clear legacy registrations
+# Clear legacy registrations (module body runs once per process)
 TOOLS.clear()
 
 # Singleton ScreenInteractor instance (shared across observe/execute calls)
@@ -294,6 +294,7 @@ async def computer_app(args: dict) -> str:
 
         # 1. Resolve via system image first
         resolved = target
+        from_index = False
         try:
             from ..services import get_profiler
             profiler = get_profiler()
@@ -304,15 +305,36 @@ async def computer_app(args: dict) -> str:
             for app in apps:
                 if app.get("name", "").lower() == target_lower:
                     resolved = app.get("path", resolved)
+                    from_index = True
                     break
             # Then try fuzzy match (name contains target)
-            if resolved == target:
+            if not from_index:
                 for app in apps:
                     if target_lower in app.get("name", "").lower():
                         resolved = app.get("path", resolved)
+                        from_index = True
                         break
         except Exception:
             pass
+
+        # shell: pseudo-paths (UWP/Store apps) are only trusted when they came
+        # from the app index.  A model-supplied query must never smuggle an
+        # arbitrary shell: target (e.g. shell:AppsFolder\\<AppID>) past the
+        # existence check.
+        if resolved.startswith("shell:") and not from_index:
+            return json.dumps({"status": "blocked", "code": "shell_path_rejected",
+                               "error": "shell: targets are only allowed from the app index; "
+                                        "use computer_app(operation='search', query=...) first"},
+                              ensure_ascii=False)
+
+        # Validate: resolved path must exist on disk.
+        # UWP/Store apps use "shell:AppsFolder\\<AppID>" pseudo-paths that
+        # os.path.exists cannot verify — allow them through to os.startfile.
+        if not resolved.startswith("shell:"):
+            if not os.path.exists(resolved):
+                return json.dumps({"status": "error", "error": f"path not found: {resolved}",
+                                   "hint": "Use computer_app(operation='search', query=...) to find apps"},
+                                  ensure_ascii=False)
 
         try:
             os.startfile(resolved)
@@ -321,12 +343,33 @@ async def computer_app(args: dict) -> str:
             return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
 
     if op == "open_file":
+        import os, re
         path = args.get("path", args.get("query", ""))
         if not path:
             return json.dumps({"status": "error", "error": "no path"}, ensure_ascii=False)
-        import subprocess, os
-        os.startfile(path)
-        return json.dumps({"status": "ok", "file": path}, ensure_ascii=False)
+
+        # Resolve to absolute path and validate existence
+        resolved = os.path.abspath(path)
+        if not os.path.exists(resolved):
+            return json.dumps({"status": "error", "error": f"file not found: {resolved}"},
+                              ensure_ascii=False)
+
+        # Block direct execution of PE files via open_file — use launch instead
+        dangerous_exts = {'.exe', '.bat', '.cmd', '.ps1', '.vbs', '.js', '.msi',
+                          '.com', '.scr', '.lnk', '.hta', '.url', '.pif', '.wsh', '.wsf',
+                          '.cpl', '.reg', '.inf'}
+        _, ext = os.path.splitext(resolved)
+        if ext.lower() in dangerous_exts:
+            return json.dumps({"status": "blocked", "code": "executable_blocked",
+                               "message": f"Cannot open '{ext}' files via open_file; "
+                                          "use computer_app(operation='launch') for executables"},
+                              ensure_ascii=False)
+
+        try:
+            os.startfile(resolved)
+            return json.dumps({"status": "ok", "file": resolved}, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
 
     return json.dumps({"status": "error", "code": "unknown_operation"}, ensure_ascii=False)
 

@@ -13,6 +13,64 @@ from typing import Any
 
 from reasonix_computer_use.vision_router import compact_route, resolve_vision_route
 
+# ── Lazy imports for heavy modules ──────────────────────────────────────────
+
+
+def _import_task_planner():
+    from reasonix_computer_use.task_planner import generate_plan
+    return generate_plan
+
+
+def _import_system_profiler():
+    from reasonix_computer_use.services import get_profiler
+    return get_profiler
+
+
+def _import_environment_setup():
+    from reasonix_computer_use.environment_setup import environment_status
+    return environment_status
+
+
+def _import_cleanup():
+    from reasonix_computer_use.perception.vision.easy_ocr import cleanup_annotations
+    return cleanup_annotations
+
+
+def _generate_report(trace_id: str, state: dict[str, Any]) -> str:
+    """Generate a human-readable task completion report."""
+    lines = [
+        "## Computer Use 任务汇报",
+        "",
+    ]
+    activation = state.get("activation_source", "unknown")
+    attempts = int(state.get("computer_attempts", 0))
+    failures = int(state.get("computer_failures", 0))
+    blocked = "是" if state.get("blocked_seen") else "否"
+    verified = "是" if state.get("task_completion_verified") else "否"
+    pending = state.get("task_completion_pending", [])
+
+    lines.append(f"- **激活源**: `{activation}`")
+    lines.append(f"- **工具调用次数**: {attempts}")
+    lines.append(f"- **失败次数**: {failures}")
+    lines.append(f"- **是否阻断**: {blocked}")
+    lines.append(f"- **完成验证**: {verified}")
+    if pending:
+        lines.append(f"- **未完成项**: {', '.join(str(p) for p in pending)}")
+    if trace_id:
+        lines.append(f"- **Trace ID**: `{trace_id}`")
+    lines.append("")
+
+    if failures == 0 and attempts > 0 and not blocked and verified == "是":
+        lines.append("✅ 任务成功完成，所有步骤经验证。")
+    elif blocked:
+        lines.append("⛔ 任务被阻断，需要用户介入。")
+    elif failures > 0:
+        lines.append(f"⚠️ 任务执行中有 {failures} 次失败，最终状态未完全验证。")
+    else:
+        lines.append("❓ 任务状态不确定，请检查 trace 详情。")
+
+    return "\n".join(lines)
+
 
 COMPUTER_TOOLS = {"computer_app", "computer_state", "computer_action", "computer_system",
                     "screen_interactor", "web_navigator"}
@@ -225,6 +283,28 @@ def handle(payload: dict[str, Any]) -> dict[str, Any] | None:
                     "Computer Use 激活失败：activation_context_missing。当前 Reasonix 未提供可靠的 session/thread/transcript 标识。"}}
         _finish_state_trace(previous_state, "cancelled")
         state = _activation_state(prompt, source)
+
+        # ── Extract task goal (stored in state, not injected) ──────────
+        goal = prompt.split(" ", 1)[1].strip() if " " in prompt else prompt
+        state["goal"] = goal
+
+        # ── Background: generate system profile if missing ─────────────
+        try:
+            get_profiler = _import_system_profiler()
+            profiler = get_profiler()
+            index = profiler.load_index()
+            if not index or not index.get("system"):
+                import threading
+                def _bg():
+                    try:
+                        profiler.profile("task activation")
+                    except Exception:
+                        pass
+                threading.Thread(target=_bg, daemon=True, name="cu-profile").start()
+        except Exception:
+            pass
+
+        # ── Start trace (lightweight) ──────────────────────────────────
         try:
             from reasonix_computer_use.trace import start_trace
             state["trace_id"] = start_trace("operator", metadata={
@@ -232,8 +312,23 @@ def handle(payload: dict[str, Any]) -> dict[str, Any] | None:
         except Exception:
             state["trace_id"] = ""
         _write_state(key, state)
+
+        # ── Minimal activation response ────────────────────────────────
+        # Hook only confirms activation. The agent is responsible for:
+        #   1. Reading memory/system.md and memory/system-index.json for system info
+        #   2. Analyzing the task and planning steps
+        #   3. Executing step by step
+        from reasonix_computer_use.services import memory_dir as _mem_dir
+        mem_path = str(_mem_dir())
         return {"hookSpecificOutput": {"hookEventName": event, "additionalContext":
-                "Computer Use 已为当前任务激活，当前命令已经展开。禁止调用 slash_command、再次调用 run/operator 命令或枚举命令列表；直接按 operator 契约从 screen_interactor 开始。任务结束后必须停止并清理激活状态。 "
+                "Computer Use 已激活。\n"
+                f"任务目标：{goal}\n"
+                f"记忆目录：{mem_path}\n"
+                "执行前必须：\n"
+                "1. 读取 memory/system.md 了解系统环境和已安装应用\n"
+                "2. 读取 memory/system-index.json 获取应用路径索引\n"
+                "3. 分析任务，拆解为原子步骤\n"
+                "4. 按步骤执行，每步验证\n"
                 + _vision_context(payload)}}
 
     state = _read_state(key)
@@ -288,7 +383,7 @@ def handle(payload: dict[str, Any]) -> dict[str, Any] | None:
             state["computer_failures"] = int(state.get("computer_failures", 0)) + 1
         if result.get("blocked"):
             state["blocked_seen"] = True
-        if tool in ("computer_state", "screen_interactor") and result.get("source") == "visual":
+        if tool in ("computer_state", "screen_interactor") and result.get("source") in ("visual", "vision"):
             state["visual_seen"] = True
         completion = result.get("task_completion", {})
         if not isinstance(completion, dict):
@@ -364,12 +459,26 @@ def handle(payload: dict[str, Any]) -> dict[str, Any] | None:
         finished = ("blocked" if state.get("blocked_seen") else
                     "incomplete" if completion_incomplete else "completed")
         _finish_state_trace(state, finished)
+
+        # ── 步骤 (3): 清理截图缓存 ────────────────────────────────────
+        try:
+            cleanup = _import_cleanup()
+            cleanup()
+        except Exception:
+            pass
+
+        # ── 步骤 (4): 生成任务汇报 ────────────────────────────────────
+        report_context = _generate_report(state.get("trace_id", ""), state)
+
         _clear_state(key)
-        if state.get("enabled") and completion_incomplete:
+        if state.get("enabled"):
+            base_msg = ("Computer Use completion gate: incomplete。最终回答必须说明仍缺少的语义凭据，"
+                        "不得把窗口标题、状态栏、静态视觉或已发送点击描述成任务完成。"
+                        if completion_incomplete else
+                        "Computer Use 任务已完成。截图缓存已清理。")
             return {"hookSpecificOutput": {"hookEventName": event, "additionalContext":
-                    "Computer Use completion gate: incomplete。最终回答必须说明仍缺少的语义凭据，"
-                    "不得把窗口标题、状态栏、静态视觉或已发送点击描述成任务完成。"}}
-    return None
+                    report_context + "\n\n" + base_msg}}
+        return None
 
 
 def main() -> int:

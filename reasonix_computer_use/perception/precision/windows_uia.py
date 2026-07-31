@@ -285,9 +285,12 @@ class WindowsUIAPrecision(PerceptionProvider):
         import ctypes
         from ctypes import wintypes
         rect = wintypes.RECT()
-        ctypes.windll.dwmapi.DwmGetWindowAttribute(
-            hwnd, 9, ctypes.byref(rect), ctypes.sizeof(rect)
-        )
+        try:
+            if ctypes.windll.dwmapi.DwmGetWindowAttribute(
+                    hwnd, 9, ctypes.byref(rect), ctypes.sizeof(rect)) != 0:
+                rect = wintypes.RECT()
+        except (AttributeError, OSError):
+            rect = wintypes.RECT()
 
         elements: List[ElementRef] = []
         seen: set = set()

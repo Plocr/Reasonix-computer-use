@@ -21,6 +21,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .. import __version__
+
 
 # ── Path management ─────────────────────────────────────────────────────────
 
@@ -29,6 +31,17 @@ def memory_dir() -> Path:
     if configured:
         return Path(configured)
     return Path(__file__).resolve().parent.parent.parent / "memory"
+
+
+def reasonix_global_memory_dir() -> Optional[Path]:
+    """Return Reasonix's global memory directory (for AI-visible memories)."""
+    import os as _os
+    # Reasonix stores global memories at %APPDATA%/reasonix/memory/
+    base = _os.environ.get("APPDATA") or _os.path.join(_os.path.expanduser("~"), "AppData", "Roaming")
+    path = Path(base) / "reasonix" / "memory" / "global"
+    if not path.exists():
+        path.mkdir(parents=True, exist_ok=True)
+    return path if path.exists() else None
 
 
 def index_path() -> Path:
@@ -140,11 +153,15 @@ class SystemProfiler:
         import platform, locale, ctypes, winreg, os, subprocess, json
         from datetime import datetime, timezone
 
+        try:
+            language = locale.getlocale()[0] or "unknown"
+        except (ValueError, TypeError, AttributeError):
+            language = "unknown"
         index = self.load_index()
         index["system"] = {
             "platform": platform.platform(),
             "architecture": platform.machine(),
-            "language": locale.getdefaultlocale()[0] or "unknown",
+            "language": language,
             "timezone": str(datetime.now(timezone.utc).astimezone().tzinfo),
             "dpi_awareness": self._detect_dpi_awareness(),
             "os_version": platform.version(),
@@ -170,9 +187,12 @@ class SystemProfiler:
         # ── Application discovery ──────────────────────────────────────
         apps = []
         apps.extend(self._scan_app_paths())
+        apps.extend(self._scan_uninstall_keys())
         apps.extend(self._scan_shortcuts())
         apps.extend(self._scan_start_apps())
         apps.extend(self._scan_running_windows())
+        apps.extend(self._scan_drive_roots())
+        apps.extend(self._scan_program_files())
         # Deduplicate by path
         seen = set()
         unique_apps = []
@@ -187,9 +207,12 @@ class SystemProfiler:
         index["app_count"] = len(unique_apps)
         index["app_categories"] = {
             "registry": sum(1 for a in unique_apps if a.get("source") == "registry"),
+            "uninstall": sum(1 for a in unique_apps if a.get("source") == "uninstall"),
             "start_menu": sum(1 for a in unique_apps if a.get("source") == "start_menu"),
             "uwp": sum(1 for a in unique_apps if a.get("source") == "uwp"),
             "running": sum(1 for a in unique_apps if a.get("source") == "running"),
+            "drive_scan": sum(1 for a in unique_apps if a.get("source") == "drive_scan"),
+            "program_files": sum(1 for a in unique_apps if a.get("source") == "program_files"),
         }
         index["quick_scan_complete"] = True
         index["enrichment_complete"] = True
@@ -372,8 +395,107 @@ return $result | ConvertTo-Json -Compress
         return apps
 
     @staticmethod
+    def _scan_uninstall_keys() -> list[dict]:
+        """Scan registry Uninstall keys for installed software (most comprehensive source)."""
+        import winreg, os
+        apps = []
+        roots = [
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+            (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        ]
+        _SKIP_EXE = {"uninstall", "uninst", "update", "setup", "crash", "helper", "installer"}
+        for hive, key_path in roots:
+            try:
+                key = winreg.OpenKey(hive, key_path)
+                try:
+                    for i in range(winreg.QueryInfoKey(key)[0]):
+                        try:
+                            subkey_name = winreg.EnumKey(key, i)
+                            subkey = winreg.OpenKey(key, subkey_name)
+                            try:
+                                name = ""
+                                location = ""
+                                icon = ""
+                                try:
+                                    name = winreg.QueryValueEx(subkey, "DisplayName")[0]
+                                except FileNotFoundError:
+                                    pass
+                                try:
+                                    location = winreg.QueryValueEx(subkey, "InstallLocation")[0]
+                                except FileNotFoundError:
+                                    pass
+                                try:
+                                    icon = winreg.QueryValueEx(subkey, "DisplayIcon")[0]
+                                    if "," in icon:
+                                        icon = icon.split(",")[0].strip()
+                                except FileNotFoundError:
+                                    pass
+                                if not name:
+                                    winreg.CloseKey(subkey)
+                                    continue
+                                exe_path = ""
+                                if icon and os.path.isfile(icon):
+                                    exe_path = icon
+                                if not exe_path and location and os.path.isdir(location):
+                                    for exe_name in os.listdir(location):
+                                        base = os.path.splitext(exe_name)[0].lower()
+                                        if exe_name.lower().endswith('.exe') and base not in _SKIP_EXE:
+                                            exe_path = os.path.join(location, exe_name)
+                                            break
+                                if not exe_path and not location:
+                                    continue
+                                apps.append({
+                                    "name": name,
+                                    "path": exe_path or location,
+                                    "source": "uninstall",
+                                    "confidence": 0.9,
+                                })
+                            except Exception: pass
+                            winreg.CloseKey(subkey)
+                        except Exception: pass
+                finally:
+                    winreg.CloseKey(key)
+            except Exception: pass
+        return apps
+
+    @staticmethod
+    def _scan_program_files() -> list[dict]:
+        """Scan Program Files directories on all drives for .exe files."""
+        import os
+        apps = []
+        _SKIP_EXE = {"uninstall", "uninst", "update", "setup", "crash", "helper",
+                      "installer", "repair", "config", "diagnostic"}
+        for letter in "CDEFGH":
+            for pf_dir in ("Program Files", "Program Files (x86)"):
+                root = f"{letter}:\\{pf_dir}"
+                if not os.path.isdir(root):
+                    continue
+                try:
+                    for entry in os.scandir(root):
+                        if not entry.is_dir():
+                            continue
+                        try:
+                            for exe in os.scandir(entry.path):
+                                base = os.path.splitext(exe.name)[0].lower()
+                                if (exe.name.lower().endswith('.exe') and exe.is_file()
+                                        and base not in _SKIP_EXE):
+                                    apps.append({
+                                        "name": entry.name,
+                                        "path": exe.path,
+                                        "source": "program_files",
+                                        "confidence": 0.7,
+                                    })
+                                    break
+                        except (PermissionError, OSError):
+                            pass
+                except (PermissionError, OSError):
+                    pass
+        return apps
+
+    @staticmethod
     def _scan_shortcuts() -> list[dict]:
-        """Scan Start Menu and Desktop for .lnk shortcuts, resolving real targets."""
+        """Scan Start Menu, Desktop, and Local Programs for .lnk shortcuts."""
         import os, subprocess, json
         apps = []
         folders = [
@@ -381,6 +503,34 @@ return $result | ConvertTo-Json -Compress
             os.path.join(os.environ.get("PROGRAMDATA", ""), r"Microsoft\Windows\Start Menu\Programs"),
             os.path.join(os.environ.get("USERPROFILE", ""), "Desktop") if os.environ.get("USERPROFILE") else "",
         ]
+        # Add user's real desktop (may be relocated to another drive)
+        for env_key in ("ONEDRIVE",):
+            od = os.environ.get(env_key, "")
+            if od:
+                od_desktop = os.path.join(od, "Desktop")
+                if os.path.isdir(od_desktop) and od_desktop not in folders:
+                    folders.append(od_desktop)
+        # Read actual Desktop path from registry (handles F:\桌面 etc.)
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders")
+            desktop_reg, _ = winreg.QueryValueEx(key, "Desktop")
+            winreg.CloseKey(key)
+            desktop_reg = os.path.expandvars(desktop_reg)
+            if os.path.isdir(desktop_reg) and desktop_reg not in folders:
+                folders.append(desktop_reg)
+        except Exception:
+            pass
+        # Add %LOCALAPPDATA%\Programs (many modern apps install here)
+        local_programs = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs")
+        if os.path.isdir(local_programs) and local_programs not in folders:
+            folders.append(local_programs)
+        # Add Quick Launch folder
+        quick_launch = os.path.join(os.environ.get("APPDATA", ""),
+            r"Microsoft\Internet Explorer\Quick Launch")
+        if os.path.isdir(quick_launch) and quick_launch not in folders:
+            folders.append(quick_launch)
         # Collect all .lnk paths
         lnk_paths = []
         for folder in folders:
@@ -394,9 +544,13 @@ return $result | ConvertTo-Json -Compress
         if not lnk_paths:
             return apps
 
-        # Resolve all .lnk targets via PowerShell (much faster than per-call COM)
-        import tempfile
-        script = r'''
+        # Resolve all .lnk targets via PowerShell (much faster than per-call COM).
+        # Batch the paths so the command line never approaches the Windows
+        # 32767-char limit on machines with thousands of shortcuts.
+        BATCH_SIZE = 200
+        for offset in range(0, len(lnk_paths), BATCH_SIZE):
+            batch = lnk_paths[offset:offset + BATCH_SIZE]
+            script = r'''
 $output = @()
 foreach ($lnk in @(%s)) {
     try {
@@ -411,27 +565,60 @@ foreach ($lnk in @(%s)) {
     } catch {}
 }
 return $output | ConvertTo-Json -Compress
-''' % ';'.join("'%s'" % p.replace("'", "''") for p in lnk_paths)
+''' % ';'.join("'%s'" % p.replace("'", "''") for p in batch)
 
-        try:
-            result = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", script],
-                capture_output=True, text=True, timeout=60)
-            if result.returncode == 0 and result.stdout.strip():
-                data = json.loads(result.stdout)
-                entries = data if isinstance(data, list) else [data]
-                for entry in entries:
-                    name = entry.get("name", "")
-                    target = entry.get("target", "")
-                    if name and target:
-                        import pathlib
-                        apps.append({
-                            "name": name,
-                            "path": target,  # Real EXE path, not .lnk
-                            "source": "start_menu",
-                            "confidence": 0.8,
-                        })
-        except: pass
+            try:
+                result = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", script],
+                    capture_output=True, text=True, timeout=60)
+                if result.returncode == 0 and result.stdout.strip():
+                    data = json.loads(result.stdout)
+                    entries = data if isinstance(data, list) else [data]
+                    for entry in entries:
+                        name = entry.get("name", "")
+                        target = entry.get("target", "")
+                        if name and target:
+                            import pathlib
+                            apps.append({
+                                "name": name,
+                                "path": target,  # Real EXE path, not .lnk
+                                "source": "start_menu",
+                                "confidence": 0.8,
+                            })
+            except Exception:
+                pass
+        return apps
+
+    @staticmethod
+    def _scan_drive_roots() -> list[dict]:
+        """Scan non-C: drive root directories for common app folders."""
+        import os
+        apps = []
+        _SKIP_EXE = {"uninstall", "uninst", "update", "setup", "crash", "helper",
+                      "installer", "repair", "config", "diagnostic"}
+        for letter in "DEFGH":
+            root = f"{letter}:\\"
+            if not os.path.isdir(root):
+                continue
+            try:
+                for entry in os.scandir(root):
+                    if not entry.is_dir() or entry.name.startswith(('$', '.', '~')):
+                        continue
+                    try:
+                        for exe in os.scandir(entry.path):
+                            base = os.path.splitext(exe.name)[0].lower()
+                            if (exe.name.lower().endswith('.exe') and exe.is_file()
+                                    and base not in _SKIP_EXE):
+                                apps.append({
+                                    "name": os.path.splitext(exe.name)[0],
+                                    "path": exe.path,
+                                    "source": "drive_scan",
+                                    "confidence": 0.5,
+                                })
+                    except (PermissionError, OSError):
+                        pass
+            except (PermissionError, OSError):
+                pass
         return apps
 
     @staticmethod
@@ -537,6 +724,58 @@ return $output | ConvertTo-Json -Compress
         # Ensure apps directory exists
         apps_dir().mkdir(parents=True, exist_ok=True)
 
+        # Also write to Reasonix global memory (AI retrievable)
+        rm_dir = reasonix_global_memory_dir()
+        if rm_dir:
+            mem_md = self._render_reasonix_memory(index)
+            _atomic_write(rm_dir / "computer-use-system-profile.md", mem_md)
+
+    def _render_reasonix_memory(self, index: Dict[str, Any]) -> str:
+        """Render a compact Reasonix memory file for the AI."""
+        hw = index.get("hardware", {})
+        sys_info = index.get("system", {})
+        displays = index.get("displays", [])
+        apps = index.get("applications", [])
+        folders = index.get("known_folders", {})
+        cats = index.get("app_categories", {})
+
+        lines = [
+            "# Computer Use 系统画像",
+            "",
+            f"> 更新：{index.get('updated_at', '?')}",
+            f"> 插件版本：{__version__}",
+            "",
+            "## 硬件",
+            f"- CPU: {hw.get('cpu', '?')} ({hw.get('cpu_cores', '?')}C/{hw.get('cpu_threads', '?')}T)",
+            f"- GPU: " + ", ".join(g.get('name', g.get('name', '?')) for g in hw.get('gpus', [])),
+            f"- RAM: {hw.get('memory_gb', '?')}GB",
+            f"- 存储: " + ", ".join(d.get('drive', '?') for d in hw.get('storage', [])),
+            "",
+            "## 显示器",
+        ]
+        for d in displays:
+            lines.append(f"- {d.get('width')}×{d.get('height')} @ {d.get('dpi')}DPI (scale_factor={d.get('scale_factor', 1.0)})")
+        lines.extend([
+            "",
+            "## 常用目录",
+        ])
+        for name, data in folders.items():
+            path = data.get("path") if isinstance(data, dict) else data
+            lines.append(f"- {name}: `{path}`")
+        lines.extend([
+            "",
+            "## 应用索引",
+            f"共 {len(apps)} 个应用",
+            f"注册表: {cats.get('registry', 0)}, 开始菜单: {cats.get('start_menu', 0)}, UWP: {cats.get('uwp', 0)}",
+            "",
+            "### 常用应用",
+        ])
+        for app in apps[:30]:
+            lines.append(f"- `{app.get('name', '?')}` → `{app.get('path', '?')}`")
+        if len(apps) > 30:
+            lines.append(f"> 还有 {len(apps) - 30} 个应用，用 computer_app(launch) 自动解析。")
+        return "\n".join(lines)
+
     def _render_markdown(self, index: Dict[str, Any]) -> str:
         """Render the system index as a human-readable Markdown summary (outline)."""
         system = index.get("system", {})
@@ -606,9 +845,12 @@ return $output | ConvertTo-Json -Compress
         lines.append(f"- **总数**：{app_count}")
         if cats:
             lines.append(f"- 注册表 App Paths：{cats.get('registry', 0)}")
+            lines.append(f"- 注册表 Uninstall：{cats.get('uninstall', 0)}")
             lines.append(f"- 开始菜单快捷方式：{cats.get('start_menu', 0)}")
             lines.append(f"- UWP/Store 应用：{cats.get('uwp', 0)}")
             lines.append(f"- 当前运行中：{cats.get('running', 0)}")
+            lines.append(f"- 盘根目录扫描：{cats.get('drive_scan', 0)}")
+            lines.append(f"- Program Files：{cats.get('program_files', 0)}")
         lines.append("")
         lines.append("> 完整应用列表见 `system-index.json`，按需通过 `computer_app(search)` 查询。")
         lines.append("")

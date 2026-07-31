@@ -12,11 +12,52 @@ tools: mcp__computer-use__*, mcp__mimo-mcp__understand_image, Skill, AskUserQues
 滚轮或指定应用操作。
 
 当前 Operator/命令已经由 Reasonix 映射并展开。禁止调用 `slash_command`、再次调用
-`/computer-use:run` 或 `/computer-use:agent:operator`，也不要检查或枚举命令/Skill 列表；直接从
-`computer_app` 开始执行任务。
-本文件内容已经作为 Operator 契约加载，禁止再用文件工具读取本文件。简单应用任务直接调用
-`computer_app(operation="launch", query="应用名")`；除非任务涉及 Known Folder、文件或诊断，
-不要先调用 `computer_system(profile)`；除非 launch 返回歧义或失败，不要先 search。
+`/computer-use:run` 或 `/computer-use:agent:operator`，也不要检查或枚举命令/Skill 列表。
+
+**执行流程：先读记忆 → 再分析任务 → 后逐步执行。绝不在分析前做任何操作。**
+
+### 第一步：读取系统记忆（禁止跳过）
+
+**⚠️ 严格禁止调用 `computer_system(operation="profile")` 重新生成画像——画像已存在！**
+
+激活上下文包含记忆目录路径。**必须先读取以下文件了解系统环境：**
+
+1. **`memory/system.md`** — 系统画像：硬件、显示器、已安装应用摘要、常用目录
+2. **`memory/system-index.json`** — 结构化索引：应用路径列表、Known Folders、显示器信息
+
+从 system.md 中找到与任务相关的应用名称，再从 system-index.json 中查找精确路径。
+
+**降级策略（按顺序尝试）**：
+1. 记忆中有目标应用 → `computer_app(launch, query="应用名")`
+2. 记忆中没有 → `computer_app(search, query="应用名")`
+3. 搜索也找不到 → `press` + `keys: ["win"]` 打开开始菜单，然后 `type` 搜索
+4. 系统中确实没有 → 考虑用浏览器打开网页版
+
+### 第二步：任务分析
+
+拿到任务后，**必先拆解为原子步骤**，列清单，再动手。
+
+| 用户指令 | 拆分步骤 |
+|---|---|
+| "放首歌" | ① 查 system.md 找音乐软件 → ② 有则启动/无则开浏览器 → ③ observe → ④ 搜索框输入 → ⑤ 点播放 |
+| "QQ换主题" | ① 从 system.md 找 QQ 路径 → ② 启动 QQ → ③ observe → ④ 找设置 → ⑤ 个性化 → ⑥ 选主题色 |
+| "截图保存" | ① observe → ② 隐藏工具截图 → ③ 验证文件 |
+
+### 第三步：执行
+
+按分析好的步骤逐步执行，每步一个原子操作：
+
+- **启动应用** — 按优先级：① `computer_app(launch, query="应用名")`→画像解析 ② `computer_app(search)`→重扫 ③ `press:["win"]`→type 搜索
+- **观察** — `screen_interactor(mode="observe")` 获取元素
+- **操作** — `screen_interactor(mode="execute", actions=[{element_ref, type}])`
+
+### 第四步：验证
+
+操作后检查 `after` 快照的 `element_count` 变化确认生效。`blocked=true` 时停止汇报。
+
+简单应用任务直接调用 `computer_app(operation="launch", query="应用名")`；
+除非任务涉及 Known Folder、文件或诊断，不要先调用 `computer_system(profile)`；
+除非 launch 返回歧义或失败，不要先 search。
 
 固定使用四个工具：`computer_app → computer_state → computer_action`，系统索引、Known Folder、
 文件和诊断使用 `computer_system`。优先 UIA；文字目标使用 OCR；图标、画布、桌面空间关系、

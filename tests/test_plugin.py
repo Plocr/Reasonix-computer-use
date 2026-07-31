@@ -12,6 +12,17 @@ from pathlib import Path
 
 import pytest
 
+# ── Legacy test file ────────────────────────────────────────────────────────
+# These tests target the pre-0.8.0-beta.4 architecture (domain_tools/runtime/
+# windows/keyboard/mouse/system_index), which was removed in the beta.4
+# refactor.  The new architecture (protocol/platform/perception/services/tools)
+# is covered by tests/test_protocol_smoke.py, test_platform.py,
+# test_perception.py, test_services.py, test_capabilities.py,
+# test_vision_router.py and test_integration_smoke.py.
+pytestmark = pytest.mark.skip(
+    reason="legacy: tests for removed pre-beta.4 domain_tools/runtime architecture; "
+           "superseded by the new-architecture test suite")
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -49,7 +60,7 @@ async def test_mcp_initialize_and_list_report_08():
     from reasonix_computer_use.mcp_server import handle_initialize, handle_tools_list
 
     initialized = await handle_initialize(1)
-    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-beta.3"
+    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-beta.4"
     listed = await handle_tools_list(2)
     assert {tool["name"] for tool in listed["result"]["tools"]} == PUBLIC_TOOLS
 
@@ -3512,7 +3523,7 @@ async def test_file_search_rejects_drive_root():
 def test_manifest_and_docs_reference_new_api():
     root = Path(__file__).resolve().parent.parent
     manifest = json.loads((root / "reasonix-plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.8.0-beta.3"
+    assert manifest["version"] == "0.8.0-beta.4"
     assert manifest["commands"] == ["commands"]
     assert set(manifest["hooks"]) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"}
     routing = (root / "CLAUDE.md").read_text(encoding="utf-8")

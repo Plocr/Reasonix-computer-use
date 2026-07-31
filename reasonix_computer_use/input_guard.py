@@ -82,11 +82,17 @@ def _acquire_lock(path: Path, timeout: float = _LOCK_TIMEOUT_SECONDS) -> tuple[i
 def reserve_text_input(*, app_identity: str, window_class: str, state_hash: str,
                        target_ref: str, text: str, task_id: str = "",
                        now: float | None = None,
-                       ttl_seconds: int = INPUT_GUARD_TTL_SECONDS) -> bool:
+                       ttl_seconds: int = INPUT_GUARD_TTL_SECONDS) -> bool | None:
     """Reserve a text injection signature, returning False for a recent replay.
 
     Only hashes are persisted. The reservation is written before input so a
     crashed or restarted MCP process cannot replay the same injection blindly.
+
+    Returns:
+        True  — signature reserved, input may proceed.
+        False — a matching signature exists within the TTL window (replay).
+        None  — guard infrastructure failure (lock/IO); the caller should
+                FAIL OPEN so legitimate input is never blocked by the guard.
     """
     timestamp = time.time() if now is None else now
     text_hash = _digest(text)
@@ -104,7 +110,7 @@ def reserve_text_input(*, app_identity: str, window_class: str, state_hash: str,
     path = _guard_path()
     lock = _acquire_lock(path)
     if lock is None:
-        return False
+        return None
     handle, lock_path = lock
     try:
         entries = []

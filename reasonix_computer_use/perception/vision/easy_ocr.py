@@ -212,7 +212,43 @@ class EasyOCRVision(PerceptionProvider):
         global _last_annotated
         _last_annotated = img_abs
 
-        # 4. Combine into ElementRef list
+        # 4. Enrich UI components with nearby OCR text
+        def _enrich_ui_box(box: dict) -> tuple[str, str]:
+            """Find nearby OCR text for a UI component box. Returns (text, role)."""
+            bx, by, bw, bh = box['x'], box['y'], box['w'], box['h']
+            nearby_texts = []
+            for tb in text_blocks:
+                tx, ty, tw, th = tb['x'], tb['y'], tb['w'], tb['h']
+                tcx, tcy = tx + tw // 2, ty + th // 2
+                # Check if text is inside the box
+                if bx <= tcx <= bx + bw and by <= tcy <= by + bh:
+                    nearby_texts.append((0, tb['text']))  # distance 0 = inside
+                    continue
+                # Check if text is directly above (within 30px, horizontally overlapping)
+                if abs(ty + th - by) < 30 and tx < bx + bw and tx + tw > bx:
+                    nearby_texts.append((abs(ty + th - by), tb['text']))
+                    continue
+                # Check if text is directly left (within 30px, vertically overlapping)
+                if abs(tx + tw - bx) < 30 and ty < by + bh and ty + th > by:
+                    nearby_texts.append((abs(tx + tw - bx), tb['text']))
+                    continue
+            if nearby_texts:
+                nearby_texts.sort(key=lambda x: x[0])
+                label = " ".join(t[1] for t in nearby_texts[:3])
+                # Guess role from component shape
+                aspect = bw / max(bh, 1)
+                if bw < 30 and bh < 30:
+                    role = "Icon"
+                elif aspect > 3 and bh < 40:
+                    role = "TextBox"
+                elif 0.5 < aspect < 3 and bh < 50:
+                    role = "Button"
+                else:
+                    role = "Pane"
+                return label, role
+            return "", "Pane"
+
+        # 5. Combine into ElementRef list
         elements: List[ElementRef] = []
         idx = 0
 
@@ -227,12 +263,13 @@ class EasyOCRVision(PerceptionProvider):
             ))
             idx += 1
 
-        # UI components
+        # UI components (enriched with nearby text)
         for box in ui_boxes[:max_elements]:
+            label, role = _enrich_ui_box(box)
             elements.append(ElementRef(
                 id=f"eocr_u{idx}",
-                text="",
-                role="Button",
+                text=label,
+                role=role,
                 bbox=(box['x'], box['y'],
                       box['x'] + box['w'], box['y'] + box['h']),
             ))

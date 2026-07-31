@@ -8,4 +8,4 @@ Architecture:
   tools/      — MCP tool implementations (screen_interactor, computer_system, web_navigator)
 """
 
-__version__ = "0.8.0-beta.3"
+__version__ = "0.8.0-beta.5"

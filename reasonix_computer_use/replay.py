@@ -10,7 +10,9 @@ from typing import Any
 from .trace import read_trace
 
 
-STRATEGIES = {"memory": 0, "uia": 1, "ocr": 2, "visual": 3}
+# Strategy levels for regression detection.  "vision" is the production
+# EasyOCR source name; "visual"/"ocr" are legacy aliases from older traces.
+STRATEGIES = {"memory": 0, "uia": 1, "precision": 1, "ocr": 2, "visual": 3, "vision": 3}
 
 
 def replay_document(document: dict[str, Any]) -> dict[str, Any]:

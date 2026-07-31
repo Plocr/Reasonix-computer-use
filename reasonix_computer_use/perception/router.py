@@ -13,6 +13,8 @@ The host Agent receives the ScreenSnapshot and issues ActionCommands.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from typing import Optional
 
 from .base import PerceptionProvider
@@ -22,6 +24,9 @@ from .precision.linux_atspi import LinuxATSPI2Precision
 from ..protocol import ScreenSnapshot
 
 logger = logging.getLogger(__name__)
+
+# Blacklist TTL: retry precision after this many seconds
+_BLACKLIST_TTL_SECONDS = 60
 
 
 class PerceptionRouter:
@@ -41,10 +46,11 @@ class PerceptionRouter:
         self._vision_easy = EasyOCRVision()
         # self._vision_vl = PaddleVLVision()  # Optional, activated on demand
 
-        # Failure tracking for fallback decisions
+        # Failure tracking for fallback decisions (thread-safe)
+        self._lock = threading.Lock()
         self._consecutive_failures: dict[str, int] = {}
-        # Windows where precision returned empty — skip precision forever
-        self._precision_blacklist: set[str] = set()
+        # Windows where precision returned empty — blacklisted with expiry
+        self._precision_blacklist: dict[str, float] = {}  # window_key → expiry timestamp
 
     def _best_precision(self) -> Optional[PerceptionProvider]:
         """Return the precision provider for the current platform, if available."""
@@ -57,6 +63,35 @@ class PerceptionRouter:
         elif sys.platform == "linux" and self._precision_linux.available:
             return self._precision_linux
         return None
+
+    def _is_blacklisted(self, window_key: str) -> bool:
+        """Check if a window is blacklisted (with TTL expiry)."""
+        with self._lock:
+            expiry = self._precision_blacklist.get(window_key)
+            if expiry is None:
+                return False
+            if time.monotonic() >= expiry:
+                # Expired — remove and allow retry
+                del self._precision_blacklist[window_key]
+                return False
+            return True
+
+    def _blacklist(self, window_key: str) -> None:
+        """Add a window to the precision blacklist with TTL."""
+        with self._lock:
+            self._precision_blacklist[window_key] = time.monotonic() + _BLACKLIST_TTL_SECONDS
+
+    def _resolve_foreground_key(self) -> str:
+        """Resolve the foreground window to a stable key (cross-platform)."""
+        from ..platform import get_platform
+        try:
+            plat = get_platform()
+            fg = plat.get_foreground_window()
+            if fg and fg.id:
+                return str(fg.id)
+        except Exception:
+            pass
+        return "foreground"
 
     def observe(
         self,
@@ -76,18 +111,12 @@ class PerceptionRouter:
         """
         window_key = str(window_id or "foreground")
 
-        # Resolve "foreground" to actual HWND for consistent blacklisting
+        # Resolve "foreground" to actual window handle for consistent blacklisting
         if window_key == "foreground":
-            import ctypes
-            try:
-                fg = ctypes.windll.user32.GetForegroundWindow()
-                if fg:
-                    window_key = str(fg)
-            except:
-                pass
+            window_key = self._resolve_foreground_key()
 
         # ── Skip precision if this window was previously blacklisted ─────
-        if window_key in self._precision_blacklist:
+        if self._is_blacklisted(window_key):
             force_vision = True
 
         # ── Try precision first (if not blacklisted) ─────────────────────
@@ -97,18 +126,21 @@ class PerceptionRouter:
                 try:
                     snapshot = precision.observe(window_id, max_elements)
                     if snapshot.elements:
-                        self._consecutive_failures[window_key] = 0
+                        with self._lock:
+                            self._consecutive_failures[window_key] = 0
                         return snapshot
-                    # Precision returned empty — blacklist this window
-                    logger.debug("Precision returned empty for '%s', blacklisting", window_key)
-                    self._precision_blacklist.add(window_key)
+                    # Precision returned empty — blacklist this window (temporary)
+                    logger.debug("Precision returned empty for '%s', blacklisting for %ds",
+                                 window_key, _BLACKLIST_TTL_SECONDS)
+                    self._blacklist(window_key)
                 except Exception as exc:
                     logger.debug("Precision layer failed: %s", exc)
 
         # Track consecutive precision failures for adaptive fallback
-        failures = self._consecutive_failures.get(window_key, 0) + 1
-        self._consecutive_failures[window_key] = failures
-        self._precision_blacklist.add(window_key)
+        with self._lock:
+            failures = self._consecutive_failures.get(window_key, 0) + 1
+            self._consecutive_failures[window_key] = failures
+        self._blacklist(window_key)
         logger.info(
             "Precision layer failed %d time(s) for window '%s', falling back to vision",
             failures, window_key,
@@ -148,5 +180,6 @@ class PerceptionRouter:
 
     def reset_failures(self) -> None:
         """Reset the consecutive failure counter and blacklist."""
-        self._consecutive_failures.clear()
-        self._precision_blacklist.clear()
+        with self._lock:
+            self._consecutive_failures.clear()
+            self._precision_blacklist.clear()

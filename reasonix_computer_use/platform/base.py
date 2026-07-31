@@ -14,9 +14,10 @@ from __future__ import annotations
 import abc
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
-from PIL.Image import Image
+if TYPE_CHECKING:
+    from PIL.Image import Image
 
 
 @dataclass

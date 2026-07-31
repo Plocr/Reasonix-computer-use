@@ -1,12 +1,12 @@
 [project]
 name = "reasonix-computer-use"
-version = "0.8.0-beta.3"
+version = "0.8.0-beta.5"
 description = "Reasonix Computer Use — cross-platform desktop automation with normalized coordinate protocol, precision-first perception, and local OCR"
 requires-python = ">=3.10"
 dependencies = [
     "Pillow>=10.0.0",
     "comtypes>=1.4.0",
-    "rapidocr-onnxruntime>=1.4.4",
+    "easyocr>=1.7",
 ]
 
 [project.optional-dependencies]
@@ -21,4 +21,3 @@ build-backend = "hatchling.build"
 
 [project.scripts]
 reasonix-computer-use = "reasonix_computer_use.mcp_server:main"
-reasonix-computer-capabilities = "reasonix_computer_use.capability_runner:main"

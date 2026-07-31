@@ -17,7 +17,7 @@ from typing import Any
 from . import __version__
 from .services import memory_dir
 
-def __read_index():
+def _read_index():
     """Read system index from disk, return {} if missing."""
     import json
     path = memory_dir() / "system-index.json"
@@ -117,6 +117,7 @@ def _atomic_bytes(path: Path, encoded: bytes) -> None:
         with os.fdopen(handle, "wb") as stream:
             stream.write(encoded)
             stream.flush()
+            os.fsync(stream.fileno())
         os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):
