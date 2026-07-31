@@ -19,7 +19,13 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from shutil import which
 from typing import Any, Dict, Optional
+
+try:
+    import mss  # type: ignore  # optional: Linux/X11 screenshots
+except ImportError:
+    mss = None  # type: ignore
 
 from .. import __version__
 
@@ -139,6 +145,8 @@ class SystemProfiler:
 
         if sys.platform == "win32":
             self._profile_windows(reason)
+        elif sys.platform == "linux":
+            self._profile_linux(reason)
         else:
             self._profile_generic(reason)
 
@@ -715,6 +723,220 @@ return $output | ConvertTo-Json -Compress
         index["hardware"] = {
             "cpu": platform.processor() or "unknown",
         }
+
+    # ── Linux profile ───────────────────────────────────────────────────────
+
+    def _profile_linux(self, reason: str) -> None:
+        """Linux (X11) system profile: XDG folders, .desktop apps, displays."""
+        import locale
+        import platform
+        from datetime import datetime, timezone
+
+        index = self.load_index()
+        try:
+            language = locale.getlocale()[0] or "unknown"
+        except (ValueError, TypeError, AttributeError):
+            language = "unknown"
+
+        index["system"] = {
+            "platform": platform.platform(),
+            "architecture": platform.machine(),
+            "language": language,
+            "timezone": str(datetime.now(timezone.utc).astimezone().tzinfo),
+            "os_version": platform.version(),
+            "os_release": platform.release(),
+            "session_type": os.environ.get("XDG_SESSION_TYPE", "unknown"),
+        }
+        index["hardware"] = self._detect_linux_hardware()
+        index["displays"] = self._detect_linux_displays()
+        index["known_folders"] = self._detect_xdg_folders()
+        index["applications"] = self._scan_desktop_files()
+
+    @staticmethod
+    def _detect_linux_hardware() -> dict:
+        """CPU / memory from /proc; GPU via lspci (best-effort)."""
+        import platform
+        import subprocess
+
+        result = {"cpu": platform.processor() or "unknown", "cpu_cores": 0,
+                  "cpu_threads": 0, "gpus": [], "memory_gb": 0, "storage": []}
+        try:
+            for line in Path("/proc/cpuinfo").read_text(
+                    encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("model name"):
+                    result["cpu"] = line.split(":", 1)[1].strip()
+                elif line.startswith("processor"):
+                    result["cpu_threads"] += 1
+            result["cpu_cores"] = result["cpu_threads"]  # cores≈threads fallback
+        except OSError:
+            pass
+        try:
+            for line in Path("/proc/meminfo").read_text(
+                    encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("MemTotal"):
+                    kb = int(line.split()[1])
+                    result["memory_gb"] = round(kb / 1024 / 1024, 1)
+                    break
+        except (OSError, ValueError):
+            pass
+        try:
+            lspci = subprocess.run(["lspci"], capture_output=True, text=True,
+                                   timeout=5)
+            for line in lspci.stdout.splitlines():
+                if "VGA" in line or "3D controller" in line:
+                    name = line.split(":", 2)[-1].strip()
+                    result["gpus"].append({"name": name})
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return result
+
+    @staticmethod
+    def _xdpi_scale() -> float:
+        """Xft.dpi / 96 from the X server (1.0 when unavailable)."""
+        try:
+            from Xlib import display as xdisplay
+            d = xdisplay.Display()
+            dpi_value = d.get_default(d.screen().root, "Xft", "dpi")
+            if dpi_value:
+                return max(1.0, float(dpi_value) / 96.0)
+        except Exception:
+            pass
+        return 1.0
+
+    @staticmethod
+    def _detect_linux_displays() -> list[dict]:
+        """Monitor list via mss + Xft.dpi scale factor.
+
+        Headless sessions return the same 'Undetected' marker as Windows
+        (never fake a resolution — it would corrupt coordinate conversion).
+        """
+        displays = []
+        scale = SystemProfiler._xdpi_scale()
+        if mss is not None:
+            try:
+                with mss.mss() as sct:
+                    monitors = sct.monitors
+                # monitors[0] = virtual screen; [1:] = physical monitors
+                for i, mon in enumerate(monitors[1:], start=1):
+                    dpi = round(96 * scale)
+                    displays.append({
+                        "width": mon["width"],
+                        "height": mon["height"],
+                        "dpi": dpi,
+                        "scale_factor": round(scale, 2),
+                        "scale_percent": round(scale * 100),
+                        "primary": i == 1,
+                        "left": mon["left"],
+                        "top": mon["top"],
+                        "name": f"Display {i}",
+                    })
+            except Exception:
+                displays = []
+        if displays:
+            return displays
+        return [{"width": 0, "height": 0, "dpi": 0, "scale_factor": 0.0,
+                 "scale_percent": 0, "primary": True, "left": 0, "top": 0,
+                 "name": "Undetected", "detected": False}]
+
+    @staticmethod
+    def _detect_xdg_folders() -> dict:
+        """XDG user dirs (user-dirs.dirs) with standard fallbacks."""
+        folders: dict = {}
+        home = Path(os.environ.get("HOME") or Path.home())
+        xdg_names = {
+            "XDG_DESKTOP_DIR": "桌面",
+            "XDG_DOCUMENTS_DIR": "文档",
+            "XDG_DOWNLOAD_DIR": "下载",
+            "XDG_PICTURES_DIR": "图片",
+            "XDG_MUSIC_DIR": "音乐",
+            "XDG_VIDEOS_DIR": "视频",
+        }
+        defaults = {
+            "XDG_DESKTOP_DIR": home / "Desktop",
+            "XDG_DOCUMENTS_DIR": home / "Documents",
+            "XDG_DOWNLOAD_DIR": home / "Downloads",
+            "XDG_PICTURES_DIR": home / "Pictures",
+            "XDG_MUSIC_DIR": home / "Music",
+            "XDG_VIDEOS_DIR": home / "Videos",
+        }
+        parsed: dict = {}
+        user_dirs = home / ".config" / "user-dirs.dirs"
+        try:
+            for line in user_dirs.read_text(encoding="utf-8",
+                                            errors="replace").splitlines():
+                line = line.strip()
+                if line.startswith("XDG_") and "=" in line:
+                    key, value = line.split("=", 1)
+                    value = value.strip().strip('"')
+                    if value.startswith("$HOME/"):
+                        value = str(home / value[len("$HOME/"):])
+                    parsed[key] = value
+        except OSError:
+            pass
+        for env_name, label in xdg_names.items():
+            value = parsed.get(env_name) or os.environ.get(env_name)
+            if not value:
+                value = str(defaults[env_name])
+            folders[label] = {"path": value}
+        folders["主目录"] = {"path": str(home)}
+        return folders
+
+    @staticmethod
+    def _scan_desktop_files() -> list[dict]:
+        """Scan .desktop files from the standard application directories."""
+        import configparser
+
+        roots = [
+            Path("/usr/share/applications"),
+            Path("/usr/local/share/applications"),
+            Path(os.environ.get("HOME") or Path.home())
+            / ".local" / "share" / "applications",
+        ]
+        apps: list[dict] = []
+        seen: set = set()
+        for root in roots:
+            if not root.is_dir():
+                continue
+            try:
+                files = sorted(root.glob("*.desktop"))
+            except OSError:
+                continue
+            for desktop in files:
+                try:
+                    parser = configparser.ConfigParser()
+                    parser.read(desktop, encoding="utf-8")
+                    if not parser.has_section("Desktop Entry"):
+                        continue
+                    entry = parser["Desktop Entry"]
+                    if entry.get("Type", "") != "Application":
+                        continue
+                    if entry.get("NoDisplay", "false").lower() == "true":
+                        continue
+                    name = entry.get("Name", desktop.stem)
+                    command = entry.get("Exec", "")
+                    try_exec = entry.get("TryExec", "")
+                    if try_exec and which(try_exec) is None:
+                        continue  # app not actually installed
+                    exec_word = (command.split(" ", 1)[0].strip()
+                                 if command else "")
+                    if exec_word.startswith("%"):
+                        exec_word = ""
+                    path = which(exec_word) if exec_word else ""
+                    dedupe = (name, command)
+                    if dedupe in seen:
+                        continue
+                    seen.add(dedupe)
+                    apps.append({
+                        "name": name,
+                        "path": path,
+                        "command": command,
+                        "icon": entry.get("Icon", ""),
+                        "source": "desktop",
+                        "confidence": 0.9,
+                    })
+                except Exception:
+                    continue
+        return apps
 
     def _write_all(self, index: Dict[str, Any]) -> None:
         """Write the index JSON and human-readable profile."""
