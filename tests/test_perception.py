@@ -53,9 +53,15 @@ class TestPerceptionProviders:
         assert mp.available is False
         assert mp.source == "precision"
 
-    def test_linux_atspi_not_available_on_windows(self):
+    def test_linux_atspi_availability(self):
+        import sys
         lp = LinuxATSPI2Precision()
-        assert lp.available is False
+        if sys.platform == "linux":
+            # On Linux CI (xvfb + python3-gi) the provider is available;
+            # on a Wayland session it is not.
+            assert lp.available is True
+        else:
+            assert lp.available is False
         assert lp.source == "precision"
 
     def test_easy_ocr_source(self):

@@ -72,8 +72,13 @@ def redact_path(value: str) -> str:
     for prefix, token in _known_folder_tokens():
         if normalized == prefix:
             return token
-        if normalized.startswith(prefix + os.sep):
-            return token + os.sep + Path(value).name
+        # Match either separator style: os.sep on this platform may differ
+        # from the separator used inside the value (e.g. a Windows path
+        # stored on Linux).  Checking both keeps redaction cross-platform.
+        if (len(normalized) > len(prefix)
+                and normalized[len(prefix)] in ("\\", "/")):
+            sep = normalized[len(prefix)]
+            return token + sep + Path(value).name
     home = os.path.normcase(str(Path.home()))
     if normalized == home or normalized.startswith(home + os.sep):
         return "~" + (os.sep + Path(value).name if normalized != home else "")
