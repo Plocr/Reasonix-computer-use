@@ -48,6 +48,15 @@ class ScreenSnapshot:
     blocked: bool = False
     blocked_reason: str = ""
 
+    # Optional: local path to a fresh screenshot of the observed area, so the
+    # host can verify state that the a11y tree does not expose (e.g. a music
+    # player's bottom bar, self-drawn widgets).
+    screenshot_path: str = ""
+
+    # Optional: human-readable hint about perception quality (e.g. "UIA
+    # element sparse — verify visually via screenshot_path").
+    quality_hint: str = ""
+
     def find_element(self, ref_id: str) -> Optional[ElementRef]:
         """Look up an element by its stable ID."""
         for el in self.elements:
@@ -69,6 +78,8 @@ class ScreenSnapshot:
             "input_submitted": self.input_submitted,
             "blocked": self.blocked,
             "blocked_reason": self.blocked_reason,
+            "screenshot_path": self.screenshot_path,
+            "quality_hint": self.quality_hint,
         }
 
     @classmethod
@@ -87,6 +98,8 @@ class ScreenSnapshot:
             input_submitted=d.get("input_submitted", False),
             blocked=d.get("blocked", False),
             blocked_reason=d.get("blocked_reason", ""),
+            screenshot_path=d.get("screenshot_path", ""),
+            quality_hint=d.get("quality_hint", ""),
         )
 
 

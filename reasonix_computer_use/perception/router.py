@@ -13,6 +13,8 @@ The host Agent receives the ScreenSnapshot and issues ActionCommands.
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 import threading
 import time
 from typing import Optional
@@ -93,6 +95,22 @@ class PerceptionRouter:
             pass
         return "foreground"
 
+    def _attach_screenshot(self, snapshot: ScreenSnapshot) -> None:
+        """Attach a fresh screenshot path so the host can verify state the
+        a11y tree does not expose (player bars, self-drawn widgets).
+
+        Best-effort: a failed screenshot never fails the observation.
+        """
+        try:
+            from ..platform import get_platform
+            img = get_platform().screenshot()
+            fd, path = tempfile.mkstemp(suffix=".png", prefix="cu_observe_")
+            os.close(fd)
+            img.save(path)
+            snapshot.screenshot_path = path
+        except Exception as exc:
+            logger.debug("Screenshot attach failed: %s", exc)
+
     def observe(
         self,
         window_id: Optional[str] = None,
@@ -128,6 +146,14 @@ class PerceptionRouter:
                     if snapshot.elements:
                         with self._lock:
                             self._consecutive_failures[window_key] = 0
+                        # Self-drawn UIs (QQ Music, CEF, ...) expose few a11y
+                        # nodes; warn the host so it can verify visually.
+                        if len(snapshot.elements) < 6:
+                            snapshot.quality_hint = (
+                                f"UIA 元素稀疏（仅 {len(snapshot.elements)} 个）——"
+                                "自绘 UI 可能未暴露全部控件；若无法定位目标元素，"
+                                "请使用 screenshot_path 截图做视觉验证")
+                        self._attach_screenshot(snapshot)
                         return snapshot
                     # Precision returned empty — blacklist this window (temporary)
                     logger.debug("Precision returned empty for '%s', blacklisting for %ds",
@@ -154,6 +180,7 @@ class PerceptionRouter:
         if best_vision is not None:
             try:
                 snapshot = best_vision.observe(window_id, max_elements)
+                self._attach_screenshot(snapshot)
                 return snapshot
             except Exception as exc:
                 logger.warning("Vision layer also failed: %s", exc)

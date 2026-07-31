@@ -112,9 +112,24 @@ allowed-tools: [screen_interactor, computer_system, computer_app, ask]
 - **同一步骤最多重试 2 次**：同一操作重复 2 次后仍无效果，立即停止并汇报当前
   状态，禁止无限"点击→观察→再点击"。
 - **快照看不到状态变化时换证据**：某些应用（如播放器底部栏）不向 UIA 快照暴露
-  关键状态，改用替代证据确认——`screenshot` 截图、系统播放提示音、窗口标题等。
+  关键状态，改用替代证据确认——`screenshot_path` 截图（observe 每次都会返回
+  新鲜截图路径，可交给视觉工具核对）、系统播放提示音、窗口标题等。
+- **observe 返回 `quality_hint` 时注意**：提示"UIA 元素稀疏"说明自绘 UI 可能
+  未暴露全部控件，优先用 `screenshot_path` 视觉验证后再操作。
 - **已生效即结束**：目标动作已执行且没有任何"未生效"的反向证据时，判定任务完成
   并立即结束任务，不要为了"再确认一次"反复操作。
+
+## 验证（expect）
+
+执行操作时可带 `expect` 做自动验证，支持：
+- `text_present`：期望出现的文本（str 或 list）——全部出现才算通过
+- `text_absent`：期望消失的文本（str 或 list）——全部不出现才算通过（如"加载中"）
+- `contains: true`：改用子串匹配，宽容首尾空格/换行（UIA 文本常带空白）
+
+示例：`expect: {"text_present": "许嵩", "text_absent": "加载中", "contains": true}`
+
+**动作名拼错时**：错误消息会提示最接近的合法动作（如 `dblClick` → `double_click`），
+按提示修正即可，不要反复试错。
 
 ## 安全边界
 

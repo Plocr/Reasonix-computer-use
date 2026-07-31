@@ -51,6 +51,23 @@ ALL_ACTIONS = POINT_ACTIONS | KEY_ACTIONS | SCROLL_ACTIONS | {
 }
 
 
+def _suggest_action(name: str) -> str:
+    """Return the closest valid action name for a misspelled one, or ''.
+
+    Host agents occasionally invent action names (e.g. ``dblClick`` instead
+    of ``double_click``).  A concrete suggestion in the error message lets
+    them self-correct instead of guessing again.
+    """
+    import difflib
+
+    lowered = name.casefold().strip()
+    if not lowered:
+        return ""
+    aliases = {candidate.casefold(): candidate for candidate in ALL_ACTIONS}
+    matches = difflib.get_close_matches(lowered, list(aliases), n=1, cutoff=0.7)
+    return aliases[matches[0]] if matches else ""
+
+
 def _resolve_target(
     action: ActionCommand,
     snapshot: ScreenSnapshot,
@@ -169,6 +186,8 @@ class ScreenInteractor:
             "blocked": snapshot.blocked,
             "blocked_reason": snapshot.blocked_reason if snapshot.blocked else "",
             "annotated_image": self._annotated_image or "",
+            "screenshot_path": snapshot.screenshot_path,
+            "quality_hint": snapshot.quality_hint,
         }
 
     # ── Execute ──────────────────────────────────────────────────────────
@@ -204,8 +223,11 @@ class ScreenInteractor:
                         "message": f"Each action must be a dict, got {type(act).__name__}"}
             action_type = act.get("type", "")
             if action_type not in ALL_ACTIONS:
+                suggestion = _suggest_action(action_type)
+                hint = f" Did you mean '{suggestion}'?" if suggestion else ""
                 return {"status": "error", "code": "unknown_action_type",
-                        "message": f"Unknown action type: {action_type}"}
+                        "message": f"Unknown action type: {action_type}.{hint}"
+                                   f" Valid types: {', '.join(sorted(ALL_ACTIONS))}"}
             parsed.append(ActionCommand.from_dict(act))
 
         # Refresh converter
@@ -431,24 +453,44 @@ class ScreenInteractor:
     # ── Verification ─────────────────────────────────────────────────────
 
     def _verify(self, expect: Dict[str, Any]) -> dict:
-        """Post-execution verification."""
+        """Post-execution verification.
+
+        Supported checks:
+          text_present — str | list[str]  — every text must be found
+          text_absent  — str | list[str]  — every text must NOT be found
+          contains     — bool             — substring match instead of exact
+        """
         verification: dict = {"checked": []}
         all_passed = True
+        contains = bool(expect.get("contains"))
 
-        if expect.get("text_present"):
-            # Re-observe and check for text
-            try:
-                snap = self._router.observe(max_elements=40)
-                texts = {el.text.casefold() for el in snap.elements if el.text}
-                for t in ([expect["text_present"]] if isinstance(expect["text_present"], str)
-                          else expect["text_present"]):
-                    found = t.casefold() in texts
-                    verification["checked"].append({"text": t, "found": found})
-                    if not found:
-                        all_passed = False
-            except Exception:
-                all_passed = False
-                verification["error"] = "verification observe failed"
+        try:
+            snap = self._router.observe(max_elements=40)
+            texts = [el.text for el in snap.elements if el.text]
+        except Exception:
+            verification["error"] = "verification observe failed"
+            verification["passed"] = False
+            return verification
+
+        def _match(expected: str, actuals: List[str]) -> bool:
+            folded = expected.casefold()
+            if contains:
+                return any(folded in actual.casefold() for actual in actuals)
+            return folded in {actual.casefold() for actual in actuals}
+
+        for kind in ("text_present", "text_absent"):
+            targets = expect.get(kind)
+            if not targets:
+                continue
+            if isinstance(targets, str):
+                targets = [targets]
+            for t in targets:
+                found = _match(t, texts)
+                if kind == "text_absent":
+                    found = not found
+                verification["checked"].append({kind: t, "found": found})
+                if not found:
+                    all_passed = False
 
         verification["passed"] = all_passed
         return verification
