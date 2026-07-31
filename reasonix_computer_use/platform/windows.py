@@ -286,17 +286,25 @@ class WindowsPlatformProvider(PlatformProvider):
         down_flag, up_flag = BUTTON_FLAGS[button]
         count = max(1, min(int(count), 10))
 
+        # Human-like click timing.  Self-drawn UIs (QQ Music, CEF apps, ...)
+        # misread machine-speed double clicks (previously 20ms hold / 50ms
+        # gap) as two single clicks.  Human double-click: ~60-100ms press
+        # hold, ~150-300ms gap, well inside the Windows double-click
+        # threshold (GetDoubleClickTime, default 500ms).
+        PRESS_HOLD = 0.06   # down -> up hold time
+        CLICK_GAP = 0.20    # interval between clicks of a multi-click
+
         self.mouse_move(x, y)
         time.sleep(0.03)
 
         for i in range(count):
             user32.mouse_event(down_flag, 0, 0, 0, 0)
             try:
-                time.sleep(0.02)
+                time.sleep(PRESS_HOLD)
             finally:
                 user32.mouse_event(up_flag, 0, 0, 0, 0)
             if i + 1 < count:
-                time.sleep(0.05)
+                time.sleep(CLICK_GAP)
 
         if duration:
             time.sleep(min(duration, 5.0))

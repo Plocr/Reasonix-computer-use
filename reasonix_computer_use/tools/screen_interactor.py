@@ -305,6 +305,11 @@ class ScreenInteractor:
                 self._platform.mouse_click(x, y, button="left", count=1)
             elif cmd.type == "double_click":
                 self._platform.mouse_click(x, y, button="left", count=2)
+                # Give the app time to react to the double click (open a
+                # detail panel, start playback, ...) before the host
+                # re-observes; prevents a premature follow-up action.
+                import time
+                time.sleep(0.3)
             elif cmd.type == "right_click":
                 self._platform.mouse_click(x, y, button="right", count=1)
             elif cmd.type == "middle_click":

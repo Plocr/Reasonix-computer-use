@@ -94,7 +94,7 @@ allowed-tools: [screen_interactor, computer_system, computer_app, ask]
 | 动作 | 说明 | 必需参数 |
 |---|---|---|
 | `click` | 点击元素 | `element_ref` |
-| `double_click` | 双击 | `element_ref` |
+| `double_click` | 双击 | `element_ref`（**必须用此动作，插件已按人类节奏执行**） |
 | `right_click` | 右键 | `element_ref` |
 | `type` | 输入文本 | `text` |
 | `press` | 按键组合 | `keys: ["CTRL", "C"]` 或 `key: "Enter"` |
@@ -103,6 +103,18 @@ allowed-tools: [screen_interactor, computer_system, computer_app, ask]
 
 **⚠️ 常见错误**：`hotkey`、`shortcut`、`keycombo` 等都不是有效动作类型。
 打开开始菜单用 `press` + `keys: ["win"]`，搜索用 `press` + `keys: ["win", "s"]`。
+
+**⚠️ 双击必须用 `double_click` 动作**，严禁用两次 `click` 模拟——两次快速独立
+点击会被自绘 UI（如 QQ 音乐）识别为两次单击，导致操作无效或弹出错误菜单。
+
+## 完成判定与退出（防循环）
+
+- **同一步骤最多重试 2 次**：同一操作重复 2 次后仍无效果，立即停止并汇报当前
+  状态，禁止无限"点击→观察→再点击"。
+- **快照看不到状态变化时换证据**：某些应用（如播放器底部栏）不向 UIA 快照暴露
+  关键状态，改用替代证据确认——`screenshot` 截图、系统播放提示音、窗口标题等。
+- **已生效即结束**：目标动作已执行且没有任何"未生效"的反向证据时，判定任务完成
+  并立即结束任务，不要为了"再确认一次"反复操作。
 
 ## 安全边界
 
