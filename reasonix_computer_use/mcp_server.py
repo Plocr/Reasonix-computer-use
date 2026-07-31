@@ -146,7 +146,10 @@ async def handle_tools_call(request_id: Any, params: dict[str, Any]) -> dict[str
             decoded = json.loads(arguments)
             arguments = decoded if isinstance(decoded, dict) else {}
         except json.JSONDecodeError:
-            arguments = {}
+            # Never silently swallow malformed arguments — the host intended
+            # a specific call and an empty dict would run it with defaults.
+            return create_error(request_id, -32602,
+                                "Tool arguments must be a valid JSON object")
     if not isinstance(arguments, dict):
         return create_error(request_id, -32602, "Tool arguments must be a JSON object")
     

@@ -50,6 +50,35 @@ user32.EnumWindows.argtypes = [ctypes.WINFUNCTYPE(ctypes.c_bool,
                                 ctypes.wintypes.LPARAM]
 user32.EnumWindows.restype = ctypes.c_bool
 
+# ── HWND-typed signatures (x64 correctness: without these, ctypes passes
+#    handles as 32-bit ints and truncates returned handles) ───────────────
+user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+user32.IsWindow.argtypes = [wintypes.HWND]
+user32.IsWindow.restype = ctypes.c_bool
+user32.IsWindowVisible.argtypes = [wintypes.HWND]
+user32.IsWindowVisible.restype = ctypes.c_bool
+user32.IsIconic.argtypes = [wintypes.HWND]
+user32.IsIconic.restype = ctypes.c_bool
+user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.ShowWindow.restype = ctypes.c_bool
+user32.BringWindowToTop.argtypes = [wintypes.HWND]
+user32.BringWindowToTop.restype = ctypes.c_bool
+user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+user32.SetForegroundWindow.restype = ctypes.c_bool
+user32.GetForegroundWindow.argtypes = []
+user32.GetForegroundWindow.restype = wintypes.HWND
+user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, ctypes.c_bool]
+user32.AttachThreadInput.restype = ctypes.c_bool
+user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetClassNameW.restype = ctypes.c_int
+user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+user32.GetWindowRect.restype = ctypes.c_bool
+user32.GetDpiForWindow.argtypes = [wintypes.HWND]
+user32.GetDpiForWindow.restype = ctypes.c_uint
+kernel32.GetCurrentThreadId.argtypes = []
+kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+
 MOUSEEVENTF_LEFTDOWN   = 0x0002
 MOUSEEVENTF_LEFTUP     = 0x0004
 MOUSEEVENTF_RIGHTDOWN  = 0x0008
@@ -101,6 +130,80 @@ def _resolve_vk(name: str) -> int:
     if len(key) == 1:
         return ord(key.upper())
     raise ValueError(f"Unknown key: {name}")
+
+
+# ── SendInput structures (module-level; shared by keyboard_type/press) ────
+# The SDK INPUT union size is determined by its LARGEST member (MOUSEINPUT
+# = 32 bytes on x64), so sizeof(INPUT) MUST be 40 — a union with only
+# KEYBDINPUT yields 32 and SendInput rejects the whole batch.
+class _MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG), ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_void_p),
+    ]
+
+
+class _KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
+        ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_void_p),
+    ]
+
+
+class _HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD),
+        ("wParamH", wintypes.WORD),
+    ]
+
+
+class _INPUT_UNION(ctypes.Union):
+    _fields_ = [("mi", _MOUSEINPUT), ("ki", _KEYBDINPUT),
+                ("hi", _HARDWAREINPUT)]
+
+
+class _INPUT(ctypes.Structure):
+    _fields_ = [("type", wintypes.DWORD), ("union", _INPUT_UNION)]
+
+
+assert ctypes.sizeof(_INPUT) == 40, \
+    f"INPUT struct must be 40 bytes on x64, got {ctypes.sizeof(_INPUT)}"
+
+INPUT_KEYBOARD = 1
+KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_UNICODE = 0x0004
+
+
+def _send_input(events: list[tuple[int, int, int]]) -> None:
+    """Send keyboard INPUT events (vk, scan, flags) and verify injection.
+
+    Raises OSError with a UIPI hint when the target window is elevated and
+    the OS blocked the injection (previously silent via keybd_event).
+    """
+    inputs = (_INPUT * len(events))()
+    for i, (vk, scan, flags) in enumerate(events):
+        slot = inputs[i]
+        slot.type = INPUT_KEYBOARD
+        slot.union.ki.wVk = vk
+        slot.union.ki.wScan = scan
+        slot.union.ki.dwFlags = flags
+        slot.union.ki.time = 0
+        slot.union.ki.dwExtraInfo = None
+    sent = user32.SendInput(len(inputs), inputs, ctypes.sizeof(_INPUT))
+    if sent != len(inputs):
+        try:
+            last_error = ctypes.windll.kernel32.GetLastError()
+        except (AttributeError, OSError):
+            last_error = None
+        hint = ""
+        if last_error == 5:
+            hint = (" (UIPI: 目标窗口以管理员权限运行，键盘注入被系统拦截；"
+                    "请以管理员权限运行 Reasonix，或以普通权限启动目标应用)")
+        raise OSError(
+            f"SendInput injected {sent}/{len(inputs)} keyboard events"
+            f" (GetLastError={last_error}){hint}")
 
 
 # ── DPI helpers ─────────────────────────────────────────────────────────────
@@ -249,54 +352,6 @@ class WindowsPlatformProvider(PlatformProvider):
         """
         if not text:
             return
-        import ctypes
-        INPUT_KEYBOARD = 1
-        KEYEVENTF_UNICODE = 0x0004
-        KEYEVENTF_KEYUP = 0x0002
-
-        # The SDK INPUT union size is determined by its LARGEST member
-        # (MOUSEINPUT = 32 bytes on x64), not by KEYBDINPUT alone.  A union
-        # with only KEYBDINPUT (24 bytes) makes sizeof(INPUT)=32 instead of
-        # the required 40, and SendInput rejects the whole batch with 0
-        # injected events (a silent no-op before the return-value check).
-        class MOUSEINPUT(ctypes.Structure):
-            _fields_ = [
-                ("dx", wintypes.LONG),
-                ("dy", wintypes.LONG),
-                ("mouseData", wintypes.DWORD),
-                ("dwFlags", wintypes.DWORD),
-                ("time", wintypes.DWORD),
-                ("dwExtraInfo", ctypes.c_void_p),
-            ]
-
-        class KEYBDINPUT(ctypes.Structure):
-            _fields_ = [
-                ("wVk", wintypes.WORD),
-                ("wScan", wintypes.WORD),
-                ("dwFlags", wintypes.DWORD),
-                ("time", wintypes.DWORD),
-                ("dwExtraInfo", ctypes.c_void_p),
-            ]
-
-        class HARDWAREINPUT(ctypes.Structure):
-            _fields_ = [
-                ("uMsg", wintypes.DWORD),
-                ("wParamL", wintypes.WORD),
-                ("wParamH", wintypes.WORD),
-            ]
-
-        class INPUT_UNION(ctypes.Union):
-            _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT),
-                        ("hi", HARDWAREINPUT)]
-
-        class INPUT(ctypes.Structure):
-            _fields_ = [
-                ("type", wintypes.DWORD),
-                ("union", INPUT_UNION),
-            ]
-
-        assert ctypes.sizeof(INPUT) == 40, \
-            f"INPUT struct must be 40 bytes on x64, got {ctypes.sizeof(INPUT)}"
 
         def utf16_units(value: str):
             """Yield UTF-16 code units, expanding astral chars to surrogates."""
@@ -314,44 +369,18 @@ class WindowsPlatformProvider(PlatformProvider):
         max_events_per_call = 2000  # 1000 code units → 2000 events (down+up)
         for offset in range(0, len(units), max_events_per_call // 2):
             chunk = units[offset:offset + max_events_per_call // 2]
-            inputs = (INPUT * (len(chunk) * 2))()
-            for i, code in enumerate(chunk):
-                for j, flags in enumerate((KEYEVENTF_UNICODE,
-                                           KEYEVENTF_UNICODE | KEYEVENTF_KEYUP)):
-                    slot = inputs[i * 2 + j]
-                    slot.type = INPUT_KEYBOARD
-                    slot.union.ki.wVk = 0
-                    slot.union.ki.wScan = code
-                    slot.union.ki.dwFlags = flags
-                    slot.union.ki.time = 0
-                    slot.union.ki.dwExtraInfo = None
-
-            sent = ctypes.windll.user32.SendInput(
-                len(inputs), inputs, ctypes.sizeof(INPUT))
-            if sent != len(inputs):
-                try:
-                    last_error = ctypes.windll.kernel32.GetLastError()
-                except (AttributeError, OSError):
-                    last_error = None
-                # ERROR_ACCESS_DENIED (5) means the target window runs with a
-                # higher integrity level (e.g. elevated/admin) and UIPI blocked
-                # the injection; ERROR_INVALID_PARAMETER (87) means the INPUT
-                # layout is wrong.
-                hint = ""
-                if last_error == 5:
-                    hint = (" (UIPI: 目标窗口以管理员权限运行，键盘注入被系统拦截；"
-                            "请以管理员权限运行 Reasonix，或以普通权限启动目标应用)")
-                elif last_error == 87:
-                    hint = " (ERROR_INVALID_PARAMETER: INPUT 结构定义有误)"
-                raise OSError(
-                    f"SendInput injected {sent}/{len(inputs)} keyboard events"
-                    f" (GetLastError={last_error}){hint}")
+            events = []
+            for code in chunk:
+                events.append((0, code, KEYEVENTF_UNICODE))
+                events.append((0, code, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP))
+            _send_input(events)
 
     def keyboard_press(self, keys: List[str]) -> None:
         """Press a key combination (e.g. ["CTRL", "C"]).
 
         Modifiers are held down, the last key is pressed and released,
-        then modifiers are released in reverse order.
+        then modifiers are released in reverse order.  Uses SendInput so a
+        UIPI-blocked injection is detected instead of silently doing nothing.
         """
         if not keys:
             return
@@ -362,23 +391,20 @@ class WindowsPlatformProvider(PlatformProvider):
         vk_mods = [_resolve_vk(m) for m in modifiers]
         all_vks = vk_mods + [vk_final]
 
-        # Key down all in order
+        events = []
         for vk in all_vks:
-            user32.keybd_event(vk, 0, 0, 0)
-            time.sleep(0.02)
-
-        # Key up in reverse order
+            events.append((vk, 0, 0))  # KEYEVENTF_KEYDOWN
         for vk in reversed(all_vks):
-            user32.keybd_event(vk, 0, 2, 0)  # KEYEVENTF_KEYUP = 2
-            time.sleep(0.02)
+            events.append((vk, 0, KEYEVENTF_KEYUP))
+        _send_input(events)
 
     def keyboard_key_down(self, key: str) -> None:
         vk = _resolve_vk(key)
-        user32.keybd_event(vk, 0, 0, 0)
+        _send_input([(vk, 0, 0)])
 
     def keyboard_key_up(self, key: str) -> None:
         vk = _resolve_vk(key)
-        user32.keybd_event(vk, 0, 2, 0)  # KEYEVENTF_KEYUP
+        _send_input([(vk, 0, KEYEVENTF_KEYUP)])
 
     # ── Screen ───────────────────────────────────────────────────────────
 
@@ -510,6 +536,17 @@ class WindowsPlatformProvider(PlatformProvider):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            # Probe for immediate exit: gdigrab can fail right away (remote
+            # session, driver issues) while the process still reports success
+            # to us.  A ~0.6s grace period catches most instant failures.
+            try:
+                time.sleep(0.6)
+                if self._recording_process.poll() is not None:
+                    rc = self._recording_process.returncode
+                    self._recording_process = None
+                    return False
+            except OSError:
+                pass
             return True
         except FileNotFoundError:
             # FFmpeg not available — can't record

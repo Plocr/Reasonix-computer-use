@@ -122,7 +122,13 @@ class ComputerSystem:
             }
         try:
             from ..environment_setup import install_dependencies
-            install_dependencies()
+            result = install_dependencies()
+            # install_dependencies returns a status dict; propagate failures
+            # instead of blindly reporting success.
+            if isinstance(result, dict) and result.get("status") in ("failed", "error"):
+                return {"status": "error", "code": "setup_failed",
+                        "message": "Dependency installation failed",
+                        "detail": str(result.get("error", result))}
             return {"status": "ok", "message": "Dependency installation started"}
         except Exception as e:
             return {"status": "error", "error": str(e)}
@@ -147,12 +153,13 @@ class ComputerSystem:
         import re as _re
         import shlex
 
-        # Whitelist of safe read-only commands
+        # Whitelist of safe read-only commands.
+        # Only real executables: cmd.exe built-ins (ver/set/echo/date/time/
+        # dir/tree) have no .exe and fail with FileNotFoundError under
+        # shell=False — listing them would only produce confusing errors.
         safe_commands = {
-            "ver", "set", "whoami", "hostname",
-            "echo", "date", "time",
-            "where", "dir", "tree",
-            "systeminfo", "tasklist",
+            "whoami", "hostname",
+            "where", "systeminfo", "tasklist",
         }
 
         raw = cmd.strip()

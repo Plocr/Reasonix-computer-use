@@ -376,6 +376,18 @@ def handle(payload: dict[str, Any]) -> dict[str, Any] | None:
 
     if event == "PostToolUse" and tool in COMPUTER_TOOLS and state.get("enabled"):
         result = _result(payload)
+        if not result:
+            # Host returned an unparseable/empty result — we cannot confirm
+            # the call succeeded.  Count it separately so failures are never
+            # silently folded into the success tally (which would let the
+            # final report claim success for a tool that actually failed).
+            state["computer_attempts"] = int(state.get("computer_attempts", 0)) + 1
+            state["computer_failures"] = int(state.get("computer_failures", 0)) + 1
+            state["unparsed_results"] = int(state.get("unparsed_results", 0)) + 1
+            _write_state(key, state)
+            return {"hookSpecificOutput": {"hookEventName": event, "additionalContext":
+                    "工具返回了无法解析的结果（可能失败或宿主字段缺失）。不得宣称该步骤成功；"
+                    "请重新观察后再执行。"}}
         vision_notice = result.get("code") in {"vision_unavailable", "vision_handoff_required"}
         state["computer_attempts"] = int(state.get("computer_attempts", 0)) + 1
         failed = result.get("status") == "error"

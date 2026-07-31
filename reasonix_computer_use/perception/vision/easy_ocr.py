@@ -163,7 +163,7 @@ class EasyOCRVision(PerceptionProvider):
     """
 
     def __init__(self):
-        pass
+        self._revision_counter: int = 0
 
     @property
     def source(self) -> str:
@@ -199,15 +199,17 @@ class EasyOCRVision(PerceptionProvider):
         text_blocks = detect_text(img_bgr)
 
         # 3. Draw annotations on a copy for debugging
-        import tempfile, os, time as _time
+        import os, time as _time
         annotated = _draw_annotations(img_bgr.copy(), text_blocks, ui_boxes)
         tmp_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "memory", "screenshots")
         os.makedirs(tmp_dir, exist_ok=True)
         ts = _time.strftime("%Y%m%d_%H%M%S")
         img_name = f"annotated_{ts}.png"
         img_path = os.path.join(tmp_dir, img_name)
-        cv2.imwrite(img_path, annotated)
-        img_abs = os.path.abspath(img_path)
+        if not cv2.imwrite(img_path, annotated):
+            logger.warning("Failed to write annotated screenshot: %s", img_path)
+            img_path = ""
+        img_abs = os.path.abspath(img_path) if img_path else ""
         # Store last annotated path for the observe response
         global _last_annotated
         _last_annotated = img_abs
@@ -281,8 +283,10 @@ class EasyOCRVision(PerceptionProvider):
             len(text_blocks), len(ui_boxes), elapsed,
         )
 
+        self._revision_counter += 1
+
         return ScreenSnapshot(
-            revision=0,
+            revision=self._revision_counter,
             window_id=str(window_id or "screen"),
             source="vision",
             elements=elements[:max_elements],

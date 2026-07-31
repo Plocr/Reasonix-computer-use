@@ -165,6 +165,15 @@ def start_environment_setup(confirmed: bool = False) -> dict[str, Any]:
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         close_fds=True, creationflags=flags,
     )
+    # Probe for immediate crash (e.g. import error) so setup_status does not
+    # report "installing" for up to STALE_SETUP_SECONDS on a dead worker.
+    try:
+        time.sleep(0.5)
+        if process.poll() is not None:
+            _write_state({"status": "failed", "phase": "worker_crashed",
+                          "error": "依赖安装 worker 启动后立即退出"})
+    except OSError:
+        pass
     _write_state({"status": "installing", "phase": "pip_install", "pid": process.pid})
     return environment_status()
 

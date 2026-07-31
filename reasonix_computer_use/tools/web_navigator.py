@@ -87,7 +87,12 @@ class WebNavigator:
         Returns:
             Suggested MCP tool call.
         """
-        srv = server if server in (self.PLAYWRIGHT_SERVER, self.CHROME_SERVER) else self.PLAYWRIGHT_SERVER
+        srv = server if server in (self.PLAYWRIGHT_SERVER, self.CHROME_SERVER) else None
+        if srv is None:
+            return {
+                "status": "error", "code": "unknown_server",
+                "message": f"Unknown MCP server: {server!r}; use 'playwright' or 'mcp-chrome'",
+            }
         tool = f"mcp__{srv}__take_snapshot"
 
         return {
@@ -115,7 +120,12 @@ class WebNavigator:
         Returns:
             Suggested MCP tool call.
         """
-        srv = server if server in (self.PLAYWRIGHT_SERVER, self.CHROME_SERVER) else self.PLAYWRIGHT_SERVER
+        srv = server if server in (self.PLAYWRIGHT_SERVER, self.CHROME_SERVER) else None
+        if srv is None:
+            return {
+                "status": "error", "code": "unknown_server",
+                "message": f"Unknown MCP server: {server!r}; use 'playwright' or 'mcp-chrome'",
+            }
 
         tool_map = {
             "click": f"mcp__{srv}__click",

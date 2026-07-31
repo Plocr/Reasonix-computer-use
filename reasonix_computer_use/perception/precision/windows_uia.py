@@ -206,7 +206,7 @@ def _walk(element, max_depth: int = 15):
         for i in range(descendants.Length):
             yield descendants.GetElement(i), 1
     except Exception:
-        return
+        raise RuntimeError("UIA tree walk failed while reading descendants") from None
 
 
 # ── Window resolution ───────────────────────────────────────────────────────

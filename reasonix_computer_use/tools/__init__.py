@@ -234,6 +234,7 @@ Prefer screen_interactor for observation and action execution.""",
         "properties": {
             "operation": {"type": "string", "enum": ["search", "launch", "open_file", "focus", "list_running", "close"]},
             "query": {"type": "string"},
+            "path": {"type": "string", "description": "File path for open_file."},
             "app_id": {"type": "string"},
             "window_id": {"type": "string"},
             "close_mode": {"type": "string", "enum": ["window", "process"]},
@@ -277,12 +278,47 @@ async def computer_app(args: dict) -> str:
             return _j.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
 
     if op == "focus":
-        plat.activate_window(args["window_id"])
-        return json.dumps({"status": "ok"}, ensure_ascii=False)
+        window_id = args.get("window_id")
+        if not window_id:
+            return json.dumps({"status": "error", "code": "missing_window_id",
+                               "error": "focus requires window_id"}, ensure_ascii=False)
+        try:
+            activated = plat.activate_window(window_id)
+        except Exception as exc:
+            return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
+        if not activated:
+            return json.dumps({"status": "error", "code": "activation_denied",
+                               "error": f"窗口激活失败（可能被系统前台锁定或窗口无效）: {window_id}",
+                               "hint": "确认目标窗口存在且未最小化；Windows 前台锁定限制下无法强制激活"},
+                              ensure_ascii=False)
+        return json.dumps({"status": "ok", "window_id": window_id}, ensure_ascii=False)
 
     if op == "close":
-        # Window close via Alt+F4
-        plat.activate_window(args["window_id"])
+        # Window close via Alt+F4.  NEVER fall through if activation fails:
+        # Alt+F4 would go to whatever window IS in the foreground, which may
+        # close the wrong (user's active) window while still reporting ok.
+        window_id = args.get("window_id")
+        if not window_id:
+            return json.dumps({"status": "error", "code": "missing_window_id",
+                               "error": "close requires window_id"}, ensure_ascii=False)
+        try:
+            activated = plat.activate_window(window_id)
+        except Exception as exc:
+            return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
+        if not activated:
+            return json.dumps({"status": "error", "code": "activation_denied",
+                               "error": f"窗口激活失败，已取消关闭以避免误关其他窗口: {window_id}"},
+                              ensure_ascii=False)
+        # Double-check the target is actually the foreground window before
+        # sending Alt+F4.
+        try:
+            fg = plat.get_foreground_window()
+        except Exception:
+            fg = None
+        if fg is None or fg.id != window_id:
+            return json.dumps({"status": "error", "code": "foreground_mismatch",
+                               "error": f"前台窗口({fg.id if fg else 'none'})不是目标({window_id})，已取消关闭"},
+                              ensure_ascii=False)
         plat.keyboard_press(["alt", "f4"])
         return json.dumps({"status": "ok", "action": "close"}, ensure_ascii=False)
 

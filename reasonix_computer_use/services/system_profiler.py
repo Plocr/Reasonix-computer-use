@@ -306,9 +306,14 @@ class SystemProfiler:
             user32.EnumDisplayMonitors(None, None, callback, 0)
         except:
             pass
-        return displays if displays else [{"width": 1920, "height": 1080, "dpi": 96,
-                                            "scale_factor": 1.0, "scale_percent": 100,
-                                            "primary": True, "left": 0, "top": 0, "name": "Default"}]
+        if displays:
+            return displays
+        # NO silent fake default: a wrong 1920x1080/1.0 would corrupt every
+        # normalized-coordinate conversion on a 125%/150% scaled system.
+        # Mark the entry as undetected so the coordinate layer can refuse it.
+        return [{"width": 0, "height": 0, "dpi": 0, "scale_factor": 0.0,
+                 "scale_percent": 0, "primary": True, "left": 0, "top": 0,
+                 "name": "Undetected", "detected": False}]
 
     @staticmethod
     def _detect_folders() -> dict:
