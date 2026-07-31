@@ -47,3 +47,6 @@ capability_app/
 capability-reports/
 capability_app/bin/
 capability_app/obj/
+
+# Archived legacy worktree (kept on disk as backup, not tracked)
+_archived/.claude/worktrees/
