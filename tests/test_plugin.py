@@ -60,7 +60,7 @@ async def test_mcp_initialize_and_list_report_08():
     from reasonix_computer_use.mcp_server import handle_initialize, handle_tools_list
 
     initialized = await handle_initialize(1)
-    assert initialized["result"]["serverInfo"]["version"] == "0.8.0-beta.4"
+    assert initialized["result"]["serverInfo"]["version"] == "0.9.0-preview"
     listed = await handle_tools_list(2)
     assert {tool["name"] for tool in listed["result"]["tools"]} == PUBLIC_TOOLS
 
@@ -3523,7 +3523,7 @@ async def test_file_search_rejects_drive_root():
 def test_manifest_and_docs_reference_new_api():
     root = Path(__file__).resolve().parent.parent
     manifest = json.loads((root / "reasonix-plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.8.0-beta.4"
+    assert manifest["version"] == "0.9.0-preview"
     assert manifest["commands"] == ["commands"]
     assert set(manifest["hooks"]) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"}
     routing = (root / "CLAUDE.md").read_text(encoding="utf-8")

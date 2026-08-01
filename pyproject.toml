@@ -1,6 +1,6 @@
 [project]
 name = "reasonix-computer-use"
-version = "0.8.0-beta.5"
+version = "0.9.0-preview"
 description = "Reasonix Computer Use — cross-platform desktop automation with normalized coordinate protocol, precision-first perception, and local OCR"
 requires-python = ">=3.10"
 dependencies = [

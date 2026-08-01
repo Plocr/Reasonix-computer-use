@@ -190,6 +190,13 @@ python -m pytest -q -p no:warnings
 
 ## 📦 版本历史
 
+**0.9.0-preview** — 三平台统一预览版：
+
+- **三平台完整实现**：Windows（UIA+SendInput）/ Linux X11（AT-SPI2+XTEST）/ macOS（AXAPI+CGEvent），共用 `platform/common.py` 单一事实源
+- **系统画像三平台统一 schema**：显示器/缩放/应用发现/常用目录/硬件（注册表、.desktop、.app、XDG、Foundation、sysctl）
+- CI 三平台全绿（windows + linux/xvfb + macOS），157+ 测试
+- 完整对外文档（README 重写）、GitHub 元信息（About/Topics）
+
 **0.8.0-beta.5** — 重构后审查修复与文档统一：
 
 - 修复 trace 链路崩溃（`_read_index` NameError）

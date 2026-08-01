@@ -1,6 +1,6 @@
 # Reasonix Computer Use — 完整工程架构
 
-> v0.8.0-beta.5 | 2026-07-31
+> v0.9.0-preview | 2026-08-01
 
 ---
 

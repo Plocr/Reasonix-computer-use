@@ -101,7 +101,7 @@ def test_action_types():
     print(f"  OK: {len(ALL_ACTIONS)} action types recognized")
 
 if __name__ == "__main__":
-    print("Computer Use Integration Test v0.8.0-beta.4\n")
+    print("Computer Use Integration Test v0.9.0-preview\n")
     test_imports()
     test_platform_interface()
     test_screen_interactor_interface()

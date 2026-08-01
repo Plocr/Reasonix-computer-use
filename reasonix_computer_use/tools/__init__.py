@@ -1,4 +1,4 @@
-"""Register the Reasonix Computer Use MCP tools (v0.8.0-beta.5).
+"""Register the Reasonix Computer Use MCP tools (v0.9.0-preview).
 
 Public tools (exposed to the host Agent):
   - screen_interactor  — Core tool: observe screens + execute actions
