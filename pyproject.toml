@@ -22,6 +22,14 @@ linux = [
     "python-xlib>=0.33",
     "mss>=9.0",
 ]
+# macOS backend: PyObjC bridges for CoreGraphics (CGEvent input, window
+# list), ApplicationServices (AXUIElement accessibility) and AppKit
+# (NSRunningApplication activation, NSScreen scale factors).
+macos = [
+    "pyobjc-framework-Quartz>=9.0",
+    "pyobjc-framework-ApplicationServices>=9.0",
+    "pyobjc-framework-AppKit>=9.0",
+]
 
 [build-system]
 requires = ["hatchling"]
