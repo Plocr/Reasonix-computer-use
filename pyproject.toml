@@ -23,12 +23,13 @@ linux = [
     "mss>=9.0",
 ]
 # macOS backend: PyObjC bridges for CoreGraphics (CGEvent input, window
-# list), ApplicationServices (AXUIElement accessibility) and AppKit
-# (NSRunningApplication activation, NSScreen scale factors).
+# list), ApplicationServices (AXUIElement accessibility) and Cocoa
+# (AppKit's NSRunningApplication/NSScreen live in the Cocoa framework
+# package, not a separate pyobjc-framework-AppKit).
 macos = [
     "pyobjc-framework-Quartz>=9.0",
     "pyobjc-framework-ApplicationServices>=9.0",
-    "pyobjc-framework-AppKit>=9.0",
+    "pyobjc-framework-Cocoa>=9.0",
 ]
 
 [build-system]
