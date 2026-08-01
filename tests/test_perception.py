@@ -48,9 +48,15 @@ class TestPerceptionProviders:
         else:
             assert wp.available is False
 
-    def test_macos_axapi_not_available_on_windows(self):
+    def test_macos_axapi_availability(self):
+        import sys
         mp = MacOSAXAPIPrecision()
-        assert mp.available is False
+        if sys.platform == "darwin":
+            # On macOS CI (PyObjC installed) the provider is available;
+            # observe() still needs the Accessibility permission.
+            assert mp.available is True
+        else:
+            assert mp.available is False
         assert mp.source == "precision"
 
     def test_linux_atspi_availability(self):

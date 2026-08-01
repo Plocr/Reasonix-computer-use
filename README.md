@@ -14,11 +14,12 @@ Reasonix 跨平台桌面自动化插件（重构版）。**精准层优先（UIA
 | **Windows** | ✅ | ✅ UIA (comtypes) | ✅ EasyOCR | **已实现、可运行**（真实应用验证：QQ 音乐、QQ、Ollama Desktop、WPS 等） |
 | **Linux** (X11) | ✅ | ✅ AT-SPI2 (PyGObject) | ✅ EasyOCR | **已实现**：XTEST 输入注入、EWMH 窗口管理、mss 截图、x11grab 录屏、.desktop 应用发现、XDG 目录 |
 | Linux (Wayland) | ✅ | ⬜ 受限 | ✅ EasyOCR | 全局坐标/输入注入不可用，UI 树尽力可用，自动降级视觉层 |
-| macOS | ✅ | ⬜ AXAPI 占位 | ⬜ 待接入 | **架构就位，展示未开发** |
+| **macOS** | ✅ | ✅ AXAPI (PyObjC) | ✅ EasyOCR | **已实现**：CGEvent 输入注入、CGWindowList 窗口管理、mss 截图、avfoundation 录屏、.app bundle 应用发现；需辅助功能权限 |
+| macOS (无权限) | ✅ | ⬜ 受限 | ✅ EasyOCR | 未授予辅助功能/屏幕录制权限时自动降级视觉层，注入操作给出明确指引 |
 
 插件不是 Windows 专用——`platform/` 层为三平台定义了统一的 `PlatformProvider` 接口，
-Linux (X11) 已完整实现（与 Windows 同一套公共时序/协议代码），macOS 的 AXAPI 精准层
-与视觉层实现已预留位置，待后续开发。
+Windows / Linux (X11) / macOS 均已完整实现，共用同一套公共时序与协议代码
+（`platform/common.py`），Wayland 与未授权场景自动降级视觉层。
 
 ## 架构
 
