@@ -172,4 +172,5 @@ def test_profile_macos_writes_full_index(profiler, mac_env, tmp_path):
     assert "桌面" in index["known_folders"]
     assert any(a["name"] == "MyApp" for a in index["applications"])
     assert index["system"]["session_type"] == "aqua"
-    assert index["hardware"]["cpu"] == "unknown"  # sysctl unavailable in test"
+    # hardware 在 macOS CI 上真实可采集（sysctl 存在）——只断言字段存在
+    assert index["hardware"]["cpu"]
