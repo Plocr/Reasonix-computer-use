@@ -147,6 +147,8 @@ class SystemProfiler:
             self._profile_windows(reason)
         elif sys.platform == "linux":
             self._profile_linux(reason)
+        elif sys.platform == "darwin":
+            self._profile_macos(reason)
         else:
             self._profile_generic(reason)
 
@@ -709,6 +711,152 @@ return $output | ConvertTo-Json -Compress
 
             user32.EnumWindows(callback, 0)
         except: pass
+        return apps
+
+    # ── macOS profile ───────────────────────────────────────────────────────
+
+    def _profile_macos(self, reason: str) -> None:
+        """macOS system profile: displays, .app bundles, user folders."""
+        import locale
+        import platform
+        from datetime import datetime, timezone
+
+        index = self.load_index()
+        try:
+            language = locale.getlocale()[0] or "unknown"
+        except (ValueError, TypeError, AttributeError):
+            language = "unknown"
+
+        index["system"] = {
+            "platform": platform.platform(),
+            "architecture": platform.machine(),
+            "language": language,
+            "timezone": str(datetime.now(timezone.utc).astimezone().tzinfo),
+            "os_version": platform.version(),
+            "os_release": platform.release(),
+            "session_type": "aqua",
+        }
+        index["hardware"] = {
+            "cpu": platform.processor() or platform.machine() or "unknown",
+        }
+        index["displays"] = self._detect_macos_displays()
+        index["known_folders"] = self._detect_macos_folders()
+        index["applications"] = self._scan_macos_apps()
+
+    @staticmethod
+    def _detect_macos_displays() -> list[dict]:
+        """Physical-pixel monitor list from CGDisplayBounds (top-left origin).
+
+        macOS global coordinates are logical points; multiply by the main
+        display's backing scale factor (Retina = 2.0).
+        """
+        displays = []
+        try:
+            import Quartz
+            scale = SystemProfiler._macos_scale_factor()
+            max_displays = 32
+            ids = (Quartz.CGDirectDisplayID * max_displays)()
+            count = Quartz.CGGetActiveDisplayList(max_displays, ids, None)
+            for i in range(count):
+                bounds = Quartz.CGDisplayBounds(ids[i])
+                x, y = bounds.origin.x, bounds.origin.y
+                width, height = bounds.size.width, bounds.size.height
+                dpi = round(96 * scale)
+                displays.append({
+                    "width": int(width * scale),
+                    "height": int(height * scale),
+                    "dpi": dpi,
+                    "scale_factor": round(scale, 2),
+                    "scale_percent": round(scale * 100),
+                    "primary": i == 0,
+                    "left": int(x * scale),
+                    "top": int(y * scale),
+                    "name": f"Display {i + 1}",
+                })
+        except Exception:
+            pass
+        if displays:
+            return displays
+        return [{"width": 0, "height": 0, "dpi": 0, "scale_factor": 0.0,
+                 "scale_percent": 0, "primary": True, "left": 0, "top": 0,
+                 "name": "Undetected", "detected": False}]
+
+    @staticmethod
+    def _macos_scale_factor() -> float:
+        try:
+            from AppKit import NSScreen
+            return float(NSScreen.mainScreen().backingScaleFactor())
+        except Exception:
+            return 1.0
+
+    @staticmethod
+    def _detect_macos_folders() -> dict:
+        """User folders via Foundation search paths."""
+        folders: dict = {}
+        try:
+            from Foundation import (NSDesktopDirectory, NSDocumentDirectory,
+                                    NSDownloadsDirectory, NSHomeDirectory,
+                                    NSMoviesDirectory, NSMusicDirectory,
+                                    NSPicturesDirectory,
+                                    NSSearchPathForDirectoriesInDomains,
+                                    NSUserDomainMask)
+            for label, const in [("桌面", NSDesktopDirectory),
+                                 ("文档", NSDocumentDirectory),
+                                 ("下载", NSDownloadsDirectory),
+                                 ("图片", NSPicturesDirectory),
+                                 ("音乐", NSMusicDirectory),
+                                 ("视频", NSMoviesDirectory)]:
+                paths = NSSearchPathForDirectoriesInDomains(
+                    const, NSUserDomainMask, True) or []
+                if paths:
+                    folders[label] = {"path": str(paths[0])}
+            folders["主目录"] = {"path": str(NSHomeDirectory())}
+        except Exception:
+            pass
+        return folders
+
+    @staticmethod
+    def _scan_macos_apps() -> list[dict]:
+        """Scan .app bundles in the standard application directories."""
+        import plistlib
+
+        roots = [
+            Path("/Applications"),
+            Path("/System/Applications"),
+            Path(os.environ.get("HOME", "")) / "Applications",
+        ]
+        apps: list[dict] = []
+        seen: set = set()
+        for root in roots:
+            if not root.is_dir():
+                continue
+            try:
+                bundles = sorted(root.glob("*.app"))
+            except OSError:
+                continue
+            for bundle in bundles:
+                info_path = bundle / "Contents" / "Info.plist"
+                if not info_path.is_file():
+                    continue
+                try:
+                    plist = plistlib.loads(info_path.read_bytes())
+                except Exception:
+                    continue
+                name = (plist.get("CFBundleDisplayName")
+                        or plist.get("CFBundleName")
+                        or bundle.stem)
+                executable = plist.get("CFBundleExecutable", "")
+                path = str(bundle / "Contents" / "MacOS" / executable) \
+                    if executable else str(bundle)
+                if name in seen:
+                    continue
+                seen.add(name)
+                apps.append({
+                    "name": str(name),
+                    "path": path,
+                    "source": "app_bundle",
+                    "confidence": 0.9,
+                })
         return apps
 
     def _profile_generic(self, reason: str) -> None:
