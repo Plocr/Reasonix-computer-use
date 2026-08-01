@@ -131,6 +131,40 @@ def test_scan_macos_apps(profiler, mac_env):
     assert myapp["confidence"] == 0.9
 
 
+def test_detect_macos_hardware(profiler, monkeypatch):
+    import json
+
+    def fake_run(args, **kwargs):
+        key = args[0]
+        if key == "sysctl":
+            values = {"machdep.cpu.brand_string": "Apple M3",
+                      "hw.physicalcpu": "8", "hw.logicalcpu": "8",
+                      "hw.memsize": "17179869184"}
+            return SimpleNamespace(returncode=0,
+                                   stdout=values.get(args[2], "unknown"))
+        if key == "system_profiler":
+            return SimpleNamespace(returncode=0, stdout=json.dumps({
+                "SPDisplaysDataType": [{
+                    "sppci_model": "Apple M3 GPU",
+                    "spdisplays_vram": "10 GB"}]}))
+        return SimpleNamespace(returncode=1, stdout="")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    hw = profiler._detect_macos_hardware()
+    assert hw["cpu"] == "Apple M3"
+    assert hw["cpu_cores"] == 8 and hw["cpu_threads"] == 8
+    assert hw["memory_gb"] == 16.0  # 17179869184 / 1024^3
+    assert hw["gpus"] == [{"name": "Apple M3 GPU", "vram": "10 GB"}]
+
+
+def test_detect_macos_hardware_sysctl_missing(profiler, monkeypatch):
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *a, **k: SimpleNamespace(returncode=1, stdout=""))
+    hw = profiler._detect_macos_hardware()
+    assert hw["cpu"] == "unknown" and hw["memory_gb"] == 0 and hw["gpus"] == []
+
+
 def test_profile_macos_writes_full_index(profiler, mac_env, tmp_path):
     profiler._profile_macos("test")
     index = profiler.load_index()
@@ -138,3 +172,4 @@ def test_profile_macos_writes_full_index(profiler, mac_env, tmp_path):
     assert "桌面" in index["known_folders"]
     assert any(a["name"] == "MyApp" for a in index["applications"])
     assert index["system"]["session_type"] == "aqua"
+    assert index["hardware"]["cpu"] == "unknown"  # sysctl unavailable in test"

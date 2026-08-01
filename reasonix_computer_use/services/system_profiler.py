@@ -736,12 +736,76 @@ return $output | ConvertTo-Json -Compress
             "os_release": platform.release(),
             "session_type": "aqua",
         }
-        index["hardware"] = {
-            "cpu": platform.processor() or platform.machine() or "unknown",
-        }
+        index["hardware"] = self._detect_macos_hardware()
         index["displays"] = self._detect_macos_displays()
         index["known_folders"] = self._detect_macos_folders()
         index["applications"] = self._scan_macos_apps()
+
+    @staticmethod
+    def _detect_macos_hardware() -> dict:
+        """CPU/memory via sysctl, GPU via system_profiler (best-effort).
+
+        Mirrors the depth of the Windows WMI collector: cpu name + core
+        counts, RAM in GB, and GPU names with VRAM.
+        """
+        import subprocess
+
+        result = {"cpu": "unknown", "cpu_cores": 0, "cpu_threads": 0,
+                  "gpus": [], "memory_gb": 0, "storage": []}
+
+        def _sysctl(names):
+            for name in names:
+                try:
+                    out = subprocess.run(
+                        ["sysctl", "-n", name], capture_output=True,
+                        text=True, timeout=3)
+                    if out.returncode == 0 and out.stdout.strip():
+                        return out.stdout.strip()
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            return ""
+
+        model = _sysctl(["machdep.cpu.brand_string", "hw.model"])
+        if model:
+            result["cpu"] = model
+        cores = _sysctl(["hw.physicalcpu", "hw.ncpu"])
+        threads = _sysctl(["hw.logicalcpu", "hw.ncpu"])
+        if cores:
+            try:
+                result["cpu_cores"] = int(cores)
+            except ValueError:
+                pass
+        if threads:
+            try:
+                result["cpu_threads"] = int(threads)
+            except ValueError:
+                pass
+        mem_bytes = _sysctl(["hw.memsize"])
+        if mem_bytes:
+            try:
+                result["memory_gb"] = round(int(mem_bytes) / 1024 ** 3, 1)
+            except ValueError:
+                pass
+        # GPU via system_profiler SPDisplaysDataType (JSON-ish plist output)
+        try:
+            out = subprocess.run(
+                ["system_profiler", "SPDisplaysDataType", "-json"],
+                capture_output=True, text=True, timeout=15)
+            if out.returncode == 0 and out.stdout.strip():
+                import json as _json
+                data = _json.loads(out.stdout)
+                for gpu in data.get("SPDisplaysDataType", []):
+                    name = gpu.get("sppci_model", gpu.get("_name", ""))
+                    if not name:
+                        continue
+                    vram = gpu.get("spdisplays_vram", "")
+                    entry = {"name": name}
+                    if vram:
+                        entry["vram"] = vram
+                    result["gpus"].append(entry)
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            pass
+        return result
 
     @staticmethod
     def _detect_macos_displays() -> list[dict]:
