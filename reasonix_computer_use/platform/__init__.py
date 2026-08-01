@@ -53,7 +53,8 @@ def get_platform() -> PlatformProvider:
         from .linux import LinuxPlatformProvider
         return LinuxPlatformProvider()
     if sys.platform == "darwin":
-        return UnsupportedPlatformProvider("macOS")
+        from .macos import MacOSPlatformProvider
+        return MacOSPlatformProvider()
     return UnsupportedPlatformProvider("Linux")
 
 # WindowsPlatformProvider is imported lazily inside get_platform() because
