@@ -742,6 +742,18 @@ return $output | ConvertTo-Json -Compress
         index["applications"] = self._scan_macos_apps()
 
     @staticmethod
+    def _parse_gb(value: str) -> float:
+        """Parse '10 GB' / '1536 MB' into numeric GB (Windows vram_gb schema)."""
+        try:
+            number, unit = value.split()
+            amount = float(number)
+            if unit.upper() in ("MB", "MIB"):
+                return round(amount / 1024, 2)
+            return round(amount, 2)
+        except (ValueError, AttributeError):
+            return 0.0
+
+    @staticmethod
     def _detect_macos_hardware() -> dict:
         """CPU/memory via sysctl, GPU via system_profiler (best-effort).
 
@@ -798,12 +810,40 @@ return $output | ConvertTo-Json -Compress
                     name = gpu.get("sppci_model", gpu.get("_name", ""))
                     if not name:
                         continue
-                    vram = gpu.get("spdisplays_vram", "")
                     entry = {"name": name}
+                    # Apple Silicon reports shared memory as
+                    # spdisplays_vram_shared; discrete GPUs use
+                    # spdisplays_vram ("10 GB"). Normalize to numeric
+                    # vram_gb to match the Windows schema.
+                    vram = (gpu.get("spdisplays_vram")
+                            or gpu.get("spdisplays_vram_shared")
+                            or "")
                     if vram:
                         entry["vram"] = vram
+                        entry["vram_gb"] = SystemProfiler._parse_gb(vram)
                     result["gpus"].append(entry)
-        except (OSError, subprocess.TimeoutExpired, ValueError):
+        except (OSError, subprocess.TimeoutExpired,
+                ValueError, AttributeError):
+            pass
+        # Storage via df -kP (local volumes only), same schema as Windows
+        try:
+            out = subprocess.run(
+                ["df", "-kP"], capture_output=True, text=True, timeout=5)
+            if out.returncode == 0:
+                for line in out.stdout.splitlines()[1:]:
+                    parts = line.split()
+                    if len(parts) < 6 or not parts[0].startswith("/dev/"):
+                        continue
+                    try:
+                        result["storage"].append({
+                            "drive": parts[0],
+                            "size_gb": round(int(parts[1]) / 1024 / 1024),
+                            "free_gb": round(int(parts[3]) / 1024 / 1024),
+                            "fs": " ".join(parts[5:]),  # mount point
+                        })
+                    except (ValueError, IndexError):
+                        continue
+        except (OSError, subprocess.TimeoutExpired):
             pass
         return result
 

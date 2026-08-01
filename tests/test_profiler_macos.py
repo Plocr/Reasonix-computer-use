@@ -146,7 +146,11 @@ def test_detect_macos_hardware(profiler, monkeypatch):
             return SimpleNamespace(returncode=0, stdout=json.dumps({
                 "SPDisplaysDataType": [{
                     "sppci_model": "Apple M3 GPU",
-                    "spdisplays_vram": "10 GB"}]}))
+                    "spdisplays_vram_shared": "10 GB"}]}))
+        if key == "df":
+            return SimpleNamespace(returncode=0, stdout="\n".join([
+                "Filesystem 1024-blocks Used Available Capacity Mounted on",
+                "/dev/disk3s1 1000000 400000 600000 40% /"]))
         return SimpleNamespace(returncode=1, stdout="")
 
     monkeypatch.setattr("subprocess.run", fake_run)
@@ -154,7 +158,15 @@ def test_detect_macos_hardware(profiler, monkeypatch):
     assert hw["cpu"] == "Apple M3"
     assert hw["cpu_cores"] == 8 and hw["cpu_threads"] == 8
     assert hw["memory_gb"] == 16.0  # 17179869184 / 1024^3
-    assert hw["gpus"] == [{"name": "Apple M3 GPU", "vram": "10 GB"}]
+    # Apple Silicon shared-memory GPU via spdisplays_vram_shared, with
+    # numeric vram_gb matching the Windows schema
+    assert hw["gpus"] == [{"name": "Apple M3 GPU", "vram": "10 GB",
+                           "vram_gb": 10.0}]
+    # storage from df -kP (local volumes)
+    assert hw["storage"][0]["drive"] == "/dev/disk3s1"
+    assert hw["storage"][0]["size_gb"] == 1  # 1000000K -> 0.95GB rounds to 1
+    assert hw["storage"][0]["free_gb"] == 1  # 600000K -> 0.57GB rounds to 1
+    assert hw["storage"][0]["fs"] == "/"
 
 
 def test_detect_macos_hardware_sysctl_missing(profiler, monkeypatch):
