@@ -25,11 +25,16 @@ def test_load_index_returns_dict():
     assert "displays" in idx
 
 
-def test_get_scale_factor_defaults():
-    sp = SystemProfiler()
-    sf = sp.get_scale_factor()
+def test_get_scale_factor_defaults(tmp_path, monkeypatch):
+    """Empty index (no displays) must yield the neutral default 1.0."""
+    import reasonix_computer_use.services.system_profiler as sp
+    # Isolate from any real/leaked system-index.json on the CI machine
+    monkeypatch.setattr(sp, "index_path",
+                        lambda: tmp_path / "nonexistent.json")
+    sp_obj = SystemProfiler()
+    sf = sp_obj.get_scale_factor()
     assert isinstance(sf, float)
-    assert sf > 0
+    assert sf == 1.0
 
 
 def test_memory_dir_exists():
