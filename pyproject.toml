@@ -30,6 +30,7 @@ macos = [
     "pyobjc-framework-Quartz>=9.0",
     "pyobjc-framework-ApplicationServices>=9.0",
     "pyobjc-framework-Cocoa>=9.0",
+    "mss>=9.0",
 ]
 
 [build-system]

@@ -768,7 +768,7 @@ return $output | ConvertTo-Json -Compress
                     "dpi": dpi,
                     "scale_factor": round(scale, 2),
                     "scale_percent": round(scale * 100),
-                    "primary": i == 0,
+                    "primary": bool(Quartz.CGDisplayIsMain(ids[i])),
                     "left": int(x * scale),
                     "top": int(y * scale),
                     "name": f"Display {i + 1}",

@@ -28,7 +28,7 @@ reasonix_computer_use/
 ├── protocol/       — 归一化坐标协议 (CLAUDE_1024, GEMINI_1000, PIXEL, ELEMENT_REF)
 ├── platform/       — OS 抽象层 (Windows/macOS/Linux PlatformProvider)
 ├── perception/     — 精准层优先 + 视觉层兜底感知管道
-│   ├── precision/  — Windows UIA (已实现) / macOS AXAPI (占位) / Linux AT-SPI2 (占位)
+│   ├── precision/  — Windows UIA / macOS AXAPI / Linux AT-SPI2 (均已实现)
 │   └── vision/     — EasyOCR + OpenCV 组件检测
 ├── services/       — 系统画像 (SystemProfiler)、Hook、Trace
 ├── tools/          — MCP 工具实现 (screen_interactor / computer_system / web_navigator)

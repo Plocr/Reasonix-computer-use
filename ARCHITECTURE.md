@@ -195,7 +195,7 @@ PlatformProvider (base.py — 16 抽象方法)
 └───────────────────┴──────────────────────────────────────┘
 
 get_platform() 工厂 → WindowsPlatformProvider (完整)
-                    → macOS 桩 (待 PyObjC 实现)
+                    → macOS AXAPI (PyObjC, 已实现)
                     → Linux 桩 (待 AT-SPI2 实现)
 ```
 

@@ -139,6 +139,10 @@ class MacOSAXAPIPrecision(PerceptionProvider):
         if isinstance(value, str):
             return value
         value = self._copy(element, self._ax().kAXDescriptionAttribute)
+        if isinstance(value, str):
+            return value
+        # Editable controls expose their content via kAXValueAttribute
+        value = self._copy(element, self._ax().kAXValueAttribute)
         return value if isinstance(value, str) else ""
 
     def _enabled(self, element) -> bool:
@@ -196,7 +200,10 @@ class MacOSAXAPIPrecision(PerceptionProvider):
                 windows = self._windows_for_pid(pid)
                 window = windows[0] if windows else None
             return pid, window
-        parts = str(window_id).split(":")
+        raw = str(window_id)
+        if raw.startswith("app:"):
+            raw = raw[4:]  # accept the same "app:<pid>" syntax as AT-SPI
+        parts = raw.split(":")
         try:
             pid = int(parts[0])
         except ValueError:

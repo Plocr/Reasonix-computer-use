@@ -13,7 +13,6 @@ silently failing.  Screen capture requires the Screen Recording permission.
 
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -37,6 +36,12 @@ _MOUSE_DOWN_EVENTS = {0: "kCGEventLeftMouseDown", 1: "kCGEventRightMouseDown",
                       2: "kCGEventOtherMouseDown"}
 _MOUSE_UP_EVENTS = {0: "kCGEventLeftMouseUp", 1: "kCGEventRightMouseUp",
                     2: "kCGEventOtherMouseUp"}
+
+
+def _utf16_length(text: str) -> int:
+    """Number of UTF-16 code units (UniChar) — CGEventKeyboardSetUnicodeString
+    counts units, not code points (emoji/astral chars = 2 units)."""
+    return sum(2 if ord(ch) > 0xFFFF else 1 for ch in text)
 
 
 def _mac_keycodes() -> dict:
@@ -164,7 +169,6 @@ class MacOSPlatformProvider(PlatformProvider):
     def mouse_drag(self, from_x: int, from_y: int,
                    to_x: int, to_y: int, duration: float = 0.5) -> None:
         self._require_accessibility("mouse_drag")
-        import Quartz
         start = self._to_points(from_x, from_y)
         points, delay = drag_plan((from_x, from_y), (to_x, to_y), duration)
 
@@ -177,7 +181,9 @@ class MacOSPlatformProvider(PlatformProvider):
                                  self._to_points(cx, cy), 0)
                 time.sleep(delay)
         finally:
-            self._post_mouse("kCGEventLeftMouseUp", start, 0)
+            # Release over the end point (matches Windows/Linux behaviour)
+            end = self._to_points(to_x, to_y)
+            self._post_mouse("kCGEventLeftMouseUp", end, 0)
 
     def mouse_scroll(self, x: int, y: int, amount: int,
                      direction: str = "vertical") -> None:
@@ -186,15 +192,17 @@ class MacOSPlatformProvider(PlatformProvider):
         self._post_mouse("kCGEventMouseMoved", self._to_points(x, y))
         time.sleep(MOVE_SETTLE)
 
-        # macOS natural scrolling: a positive axis delta scrolls content up.
+        # macOS natural scrolling: a positive wheel delta scrolls content up.
+        # PyObjC contract: CGEventCreateScrollWheelEvent(source, units,
+        # wheelCount, wheel1, wheel2, wheel3) — wheel1=vertical, wheel2=horizontal.
         positive = direction in ("up", "right")
         delta = amount if positive else -amount
-        field = (Quartz.kCGScrollWheelEventDeltaAxis2 if direction
-                 in ("left", "right") else Quartz.kCGScrollWheelEventDeltaAxis1)
-        event = Quartz.CGEventCreateScrollWheelEvent(
-            None, Quartz.kCGScrollEventUnitLine,
-            1 if direction in ("left", "right") else 1, delta)
-        Quartz.CGEventSetIntegerValueField(event, field, delta)
+        if direction in ("left", "right", "horizontal"):
+            event = Quartz.CGEventCreateScrollWheelEvent(
+                None, Quartz.kCGScrollEventUnitLine, 1, 0, delta, 0)
+        else:
+            event = Quartz.CGEventCreateScrollWheelEvent(
+                None, Quartz.kCGScrollEventUnitLine, 1, delta, 0, 0)
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
         time.sleep(SCROLL_SETTLE)
 
@@ -216,10 +224,12 @@ class MacOSPlatformProvider(PlatformProvider):
         import Quartz
         for chunk in (text[i:i + 100] for i in range(0, len(text), 100)):
             down = Quartz.CGEventCreateKeyboardEvent(None, 0, True)
-            Quartz.CGEventKeyboardSetUnicodeString(down, len(chunk), chunk)
+            Quartz.CGEventKeyboardSetUnicodeString(
+                down, _utf16_length(chunk), chunk)
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
             up = Quartz.CGEventCreateKeyboardEvent(None, 0, False)
-            Quartz.CGEventKeyboardSetUnicodeString(up, len(chunk), chunk)
+            Quartz.CGEventKeyboardSetUnicodeString(
+                up, _utf16_length(chunk), chunk)
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
 
     def _resolve_keycode(self, name: str) -> int:
@@ -234,8 +244,12 @@ class MacOSPlatformProvider(PlatformProvider):
         self._require_accessibility("keyboard_press")
         *modifiers, final = keys
         flags = 0
+        mod_flags = _modifier_flags()
         for mod in modifiers:
-            flags |= _modifier_flags().get(normalize_key_name(mod), 0)
+            canonical = normalize_key_name(mod)
+            if canonical not in mod_flags:
+                raise ValueError(f"Unknown modifier key: {mod}")
+            flags |= mod_flags[canonical]
         keycode = self._resolve_keycode(final)
 
         import Quartz

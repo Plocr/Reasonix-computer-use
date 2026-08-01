@@ -88,14 +88,11 @@ def _install_fake_pyobjc():
     def CGEventKeyboardSetUnicodeString(event, length, text):
         event["text"] = str(text)
 
-    def CGEventCreateScrollWheelEvent(source, unit, wheel_count, delta):
-        ev = {"delta": delta}
+    def CGEventCreateScrollWheelEvent(source, unit, wheel_count,
+                                     wheel1, wheel2, wheel3):
+        ev = {"wheel1": wheel1, "wheel2": wheel2}
         calls.append({"kind": "scroll", "event": ev})
         return ev
-
-    def CGEventSetIntegerValueField(event, field, value):
-        event["field"] = field
-        event["value"] = value
 
     def CGWindowListCopyWindowInfo(option, relative):
         return [{
@@ -131,7 +128,6 @@ def _install_fake_pyobjc():
     Quartz.CGEventSetFlags = CGEventSetFlags
     Quartz.CGEventKeyboardSetUnicodeString = CGEventKeyboardSetUnicodeString
     Quartz.CGEventCreateScrollWheelEvent = CGEventCreateScrollWheelEvent
-    Quartz.CGEventSetIntegerValueField = CGEventSetIntegerValueField
     Quartz.CGWindowListCopyWindowInfo = CGWindowListCopyWindowInfo
     Quartz.CGGetActiveDisplayList = CGGetActiveDisplayList
     Quartz.CGDisplayBounds = CGDisplayBounds
@@ -243,6 +239,42 @@ def test_mouse_click_human_timing(provider, mac_env, monkeypatch):
 def test_mouse_click_unknown_button(provider):
     with pytest.raises(ValueError):
         provider.mouse_click(0, 0, button="side")
+
+
+def test_mouse_scroll_axes(provider, mac_env):
+    _, calls = mac_env
+    provider.mouse_scroll(10, 10, amount=2)              # down -> wheel1 negative? no: natural
+    provider.mouse_scroll(10, 10, amount=-2)             # up
+    provider.mouse_scroll(10, 10, amount=1, direction="horizontal")  # right -> wheel2
+    scrolls = [c["event"] for c in calls if c["kind"] == "scroll"]
+    assert scrolls[0]["wheel1"] == -2 and scrolls[0]["wheel2"] == 0
+    assert scrolls[1]["wheel1"] == 2 and scrolls[1]["wheel2"] == 0
+    # horizontal: viewport right = content left = negative wheel2 (natural scroll)
+    assert scrolls[2]["wheel1"] == 0 and scrolls[2]["wheel2"] == -1
+
+
+def test_mouse_drag_releases_at_end(provider, mac_env):
+    _, calls = mac_env
+    provider.mouse_drag(0, 0, 100, 100, duration=0.2)
+    events = [c for c in calls if c["kind"] == "mouse"]
+    assert events[0]["type"] == 17                      # move to start
+    assert events[1]["type"] == 11                      # down
+    assert any(e["type"] == 18 for e in events)         # dragged
+    assert events[-1]["type"] == 12                     # up
+    # Up is posted at the END point (100,100) -> (50.0, 50.0) at scale 2
+    assert events[-1]["pos"] == (50.0, 50.0)
+
+
+def test_keyboard_press_unknown_modifier(provider):
+    with pytest.raises(ValueError):
+        provider.keyboard_press(["not_a_mod", "f5"])
+
+
+def test_utf16_length_counts_astral_chars():
+    from reasonix_computer_use.platform.macos import _utf16_length
+    assert _utf16_length("abc") == 3
+    assert _utf16_length("你好") == 2
+    assert _utf16_length("a😀b") == 4  # emoji = 2 UTF-16 units
 
 
 # ── Keyboard ─────────────────────────────────────────────────────────────

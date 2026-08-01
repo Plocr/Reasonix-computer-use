@@ -42,6 +42,7 @@ def _install_fake_foundation(tmp_apps: list[dict]):
 
     Quartz.CGGetActiveDisplayList = CGGetActiveDisplayList
     Quartz.CGDisplayBounds = CGDisplayBounds
+    Quartz.CGDisplayIsMain = lambda display_id: display_id == 1
 
     Foundation.NSDesktopDirectory = 1
     Foundation.NSDocumentDirectory = 2
