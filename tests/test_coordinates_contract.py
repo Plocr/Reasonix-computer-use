@@ -131,3 +131,42 @@ def test_from_physical_defensive_on_bad_rect():
     coord = conv.from_physical(500, 400, CoordinateSpace.CLAUDE_1024,
                                window_rect=(0, 0, 0, 0))
     assert 0 <= coord.x <= 1023 and 0 <= coord.y <= 1023
+
+
+def test_center_fallback_rejects_zero_height_rect():
+    """A height-0 window rect must not produce a negative-y click."""
+    conv = CoordinateConverter(display_width=1920, display_height=1080)
+    platform = mock.Mock()
+    fg = mock.Mock()
+    fg.rect = (0, 0, 100, 0)  # width ok, height 0
+    platform.get_foreground_window.return_value = fg
+    action = ActionCommand.from_dict({"type": "click"})
+    x, y, rect = _resolve_target(action, ScreenSnapshot(0, "", "unknown"),
+                                 conv, platform)
+    assert (x, y) == (0, 0)  # falls through to the origin fallback
+    assert rect is None
+
+
+def test_suggest_action_handles_non_string():
+    from reasonix_computer_use.tools.screen_interactor import _suggest_action
+    assert _suggest_action(None) == ""
+    assert _suggest_action(123) == ""
+    assert _suggest_action("dblClick") == "double_click"
+
+
+def test_execute_with_non_string_type_returns_error_not_crash():
+    """A non-string action type must yield unknown_action_type, not crash."""
+    import asyncio
+    from reasonix_computer_use.tools.screen_interactor import ScreenInteractor
+
+    si = ScreenInteractor.__new__(ScreenInteractor)
+    si._router = mock.Mock()
+    si._converter = CoordinateConverter()
+    si._latest_snapshot = None
+
+    result = asyncio.run(si.execute(
+        actions=[{"type": 123}],
+        revision=None,
+    ))
+    assert result["status"] == "error"
+    assert result["code"] == "unknown_action_type"

@@ -58,10 +58,7 @@ allowed-tools: [screen_interactor, computer_system, computer_app, ask]
 
 ### 第三步：验证
 
-操作后检查 `after` 快照的 `element_count` 变化确认生效。`blocked=true` 时停止汇报。
-2. **观察** — `screen_interactor(mode="observe", window_id=...)` 获取 `ScreenSnapshot`。每个元素有唯一 `id`（如 `e1`、`eocr_t0`）、`role`、`text`、`bbox`。
-3. **操作** — `screen_interactor(mode="execute", actions=[...])`。每条指令优先使用 `element_ref`（元素 ID），`fallback` 为归一化坐标。
-4. **验证** — 操作后 observe 的 `after` 字段自动包含最新状态快照。
+操作后检查 execute 返回的 `after` 快照的 `element_count` 变化确认生效。`blocked=true` 时停止汇报。
 
 ## 任务分解
 

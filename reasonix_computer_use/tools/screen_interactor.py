@@ -60,6 +60,8 @@ def _suggest_action(name: str) -> str:
     """
     import difflib
 
+    if not isinstance(name, str):
+        return ""  # non-string action type — no suggestion possible
     lowered = name.casefold().strip()
     if not lowered:
         return ""
