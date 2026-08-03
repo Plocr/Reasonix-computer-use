@@ -7,6 +7,14 @@ Coordinate spaces:
   - PIXEL:        raw physical pixels (requires resolution context)
   - ELEMENT_REF:  element ID reference (most stable; preferred for text-only LLMs)
 
+Mapping semantics (important):
+  - When a foreground window is available, CLAUDE_1024 / GEMINI_1000 map
+    to the WINDOW INTERIOR — (0,0) is the window's top-left corner and
+    (1023,1023) its bottom-right.  This keeps normalized coordinates
+    stable regardless of window position/size.
+  - When no window is targeted, they map to the full display.
+  - PIXEL coordinates are used verbatim as physical screen pixels.
+
 All conversion uses the physical display dimensions from system-index.json;
 scale_factor is carried for host Agent reference only.
 """
@@ -49,7 +57,10 @@ class NormalizedCoord:
             raise ValueError("ELEMENT_REF space requires a ref (element ID)")
         if self.space == CoordinateSpace.CLAUDE_1024:
             if not (0 <= self.x <= 1023 and 0 <= self.y <= 1023):
-                raise ValueError(f"CLAUDE_1024 coords must be 0–1023, got ({self.x}, {self.y})")
+                raise ValueError(
+                    f"CLAUDE_1024 coords must be 0–1023, got ({self.x}, {self.y}). "
+                    "If you meant physical screen pixels, set fallback.space="
+                    "\"PIXEL\" (or use element_ref from an observe snapshot).")
         elif self.space == CoordinateSpace.GEMINI_1000:
             if not (0 <= self.x <= 999 and 0 <= self.y <= 999):
                 raise ValueError(f"GEMINI_1000 coords must be 0–999, got ({self.x}, {self.y})")

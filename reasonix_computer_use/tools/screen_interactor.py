@@ -73,8 +73,14 @@ def _resolve_target(
     snapshot: ScreenSnapshot,
     converter: CoordinateConverter,
     platform: PlatformProvider,
-) -> tuple[int, int]:
+) -> tuple[int, int, Optional[tuple[int, int, int, int]]]:
     """Resolve an action's target to physical screen coordinates.
+
+    Returns (x, y, window_rect): the physical pixel target and the window
+    rect that normalized coordinates were mapped against (None when the
+    target came from an element ref or the raw cursor).  The rect is
+    echoed back in the tool response so the host can verify how a
+    normalized coordinate was interpreted.
 
     Priority: ELEMENT_REF → fallback normalized coord → current cursor.
     Never returns None — falls back to current cursor position.
@@ -96,22 +102,27 @@ def _resolve_target(
                 f"element_ref '{action.element_ref}' has an empty bounding box")
         cx = (el.bbox[0] + el.bbox[2]) // 2
         cy = (el.bbox[1] + el.bbox[3]) // 2
-        return (cx, cy)
+        return (cx, cy, None)
 
-    # 2. Try fallback normalized coordinate
+    # 2. Try fallback normalized coordinate.
+    #    IMPORTANT: with a foreground window present, CLAUDE_1024 and
+    #    GEMINI_1000 map to the WINDOW INTERIOR (window-relative), not the
+    #    full display.  PIXEL space is used verbatim.  The rect used is
+    #    returned so the mapping is transparent to the host.
     if action.fallback:
         fg = platform.get_foreground_window()
         window_rect = fg.rect if fg else None
-        return converter.to_physical(action.fallback, window_rect=window_rect)
+        x, y = converter.to_physical(action.fallback, window_rect=window_rect)
+        return (x, y, window_rect)
 
     # 3. Ultimate fallback: center of foreground window (cross-platform safe)
     fg = platform.get_foreground_window()
     if fg and fg.rect[2] > fg.rect[0]:
         cx = (fg.rect[0] + fg.rect[2]) // 2
         cy = (fg.rect[1] + fg.rect[3]) // 2
-        return (cx, cy)
+        return (cx, cy, fg.rect)
     # Last resort: origin — action will land at (0,0) rather than crash
-    return (0, 0)
+    return (0, 0, None)
 
 
 # ── screen_interactor tool ──────────────────────────────────────────────────
@@ -315,13 +326,14 @@ class ScreenInteractor:
 
         # ── Point actions ─────────────────────────────────────────────
         if cmd.type in POINT_ACTIONS:
-            target = _resolve_target(
+            x, y, window_rect = _resolve_target(
                 cmd, self._latest_snapshot or ScreenSnapshot(0, "", "unknown"),
                 self._converter, self._platform,
             )
-            x, y = target
             result["x"] = x
             result["y"] = y
+            if window_rect is not None:
+                result["window_rect"] = list(window_rect)
 
             if cmd.type in ("click", "click_ref", "click_point", "click_text"):
                 self._platform.mouse_click(x, y, button="left", count=1)
