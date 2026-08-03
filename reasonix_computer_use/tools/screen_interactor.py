@@ -17,13 +17,12 @@ ELEMENT_REF).  Conversion to physical pixels happens internally.
 
 from __future__ import annotations
 
-import json
 import os
 from typing import Any, Dict, List, Optional
 
 from ..protocol import (
-    CoordinateSpace, CoordinateConverter, NormalizedCoord,
-    ScreenSnapshot, ActionCommand, ElementRef,
+    CoordinateConverter,
+    ScreenSnapshot, ActionCommand,
 )
 from ..perception import PerceptionRouter
 from ..platform import get_platform, PlatformProvider
@@ -82,8 +81,8 @@ def _resolve_target(
     echoed back in the tool response so the host can verify how a
     normalized coordinate was interpreted.
 
-    Priority: ELEMENT_REF → fallback normalized coord → current cursor.
-    Never returns None — falls back to current cursor position.
+    Priority: ELEMENT_REF → fallback normalized coord → foreground window
+    center → (0, 0) (never raises for a missing target).
     """
     # 1. Try element ref against latest snapshot.
     #    A stale/unknown ref must NOT silently fall back to the window
@@ -94,7 +93,7 @@ def _resolve_target(
         el = snapshot.find_element(action.element_ref)
         if el is None:
             raise ValueError(
-                f"element_ref '{action.element_ref}' no longer exists in the "
+                f"element_ref {action.element_ref!r} no longer exists in the "
                 "latest snapshot (UI changed); call observe() again to get "
                 "fresh element IDs")
         if el.bbox[2] <= el.bbox[0] or el.bbox[3] <= el.bbox[1]:
@@ -111,8 +110,12 @@ def _resolve_target(
     #    returned so the mapping is transparent to the host.
     if action.fallback:
         fg = platform.get_foreground_window()
-        window_rect = fg.rect if fg else None
+        window_rect = None
+        if fg is not None and fg.rect[2] > fg.rect[0] and fg.rect[3] > fg.rect[1]:
+            window_rect = fg.rect
         x, y = converter.to_physical(action.fallback, window_rect=window_rect)
+        # The rect echoed back is the one actually used (None = full display),
+        # so the host's 物理x - rect[0] verification stays truthful.
         return (x, y, window_rect)
 
     # 3. Ultimate fallback: center of foreground window (cross-platform safe)

@@ -97,3 +97,37 @@ def test_execute_reports_window_rect(monkeypatch):
     assert result["window_rect"] == [769, 234, 1169, 809]
     si._platform.mouse_click.assert_called_once_with(969, 642, button="left",
                                                      count=1)
+
+
+def test_implausible_window_rect_falls_back_to_full_display():
+    """An invalid window rect must not produce off-screen clicks; the
+    echoed rect is None (full-display mapping) so host math stays truthful."""
+    conv = CoordinateConverter(display_width=1920, display_height=1080)
+    coord = NormalizedCoord(x=512, y=545, space=CoordinateSpace.CLAUDE_1024)
+    x, y = conv.to_physical(coord, window_rect=(0, 0, 0, 0))
+    assert (x, y) == (960, 766)  # full-display mapping (512/1024*1920, 545/768*1080)
+
+    platform = mock.Mock()
+    fg = mock.Mock()
+    fg.rect = (0, 0, 0, 0)  # implausible
+    platform.get_foreground_window.return_value = fg
+    action = ActionCommand.from_dict({
+        "type": "click",
+        "fallback": {"x": 512, "y": 545, "space": "CLAUDE_1024"},
+    })
+    x, y, rect = _resolve_target(action, ScreenSnapshot(0, "", "unknown"),
+                                 conv, platform)
+    assert rect is None  # echoed as full-display mapping
+    assert (x, y) == (960, 766)
+
+
+def test_gemini_out_of_range_suggests_pixel_space():
+    with pytest.raises(ValueError, match="PIXEL"):
+        NormalizedCoord(x=1200, y=500, space=CoordinateSpace.GEMINI_1000)
+
+
+def test_from_physical_defensive_on_bad_rect():
+    conv = CoordinateConverter(display_width=1920, display_height=1080)
+    coord = conv.from_physical(500, 400, CoordinateSpace.CLAUDE_1024,
+                               window_rect=(0, 0, 0, 0))
+    assert 0 <= coord.x <= 1023 and 0 <= coord.y <= 1023

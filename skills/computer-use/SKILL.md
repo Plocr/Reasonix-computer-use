@@ -115,8 +115,10 @@ allowed-tools: [screen_interactor, computer_system, computer_app, ask]
 - **`CLAUDE_1024` = 前台窗口内归一化**：`(0,0)` 是窗口左上角，`(1023,1023)` 是窗口右下角
   （有前台窗口时）；无窗口时才是全屏。**不要**把全屏截图坐标当 CLAUDE_1024 传。
 - **窗口 rect 是物理像素**（observe 的 `window_id` 与 `window_rect` 同单位）。
-- 每个 point action 的响应会返回实际物理坐标 `x`/`y` 与映射基准 `window_rect`——
-  用 `window_rect` 反推可验证坐标是否落在目标上（`窗口内 x = 物理x - window_rect[0]`）。
+- point action 使用 fallback 坐标时，响应会返回实际物理坐标 `x`/`y` 与映射基准
+  `window_rect`——用 `window_rect` 反推可验证坐标是否落在目标上
+  （`窗口内 x = 物理x - window_rect[0]`；`window_rect` 为 null 表示按全屏映射）。
+  element_ref 命中时不返回 window_rect（坐标直接来自元素 bbox）。
 - 自绘 UI（QQ/CEF/游戏）无障碍树不可用时，推荐工作流：
   1. 用截图（`screenshot_path`）裁剪目标区域；
   2. 像素检测定位（主题色/边框等确定性特征），或把裁剪图交给视觉工具描述布局；

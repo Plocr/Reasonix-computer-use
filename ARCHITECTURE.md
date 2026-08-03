@@ -115,12 +115,12 @@ Agent: screen_interactor(mode="execute", actions=[{type, element_ref, fallback}]
    └─ key→keys 别名 (字符串自动包裹成列表)
    └─ press_key→press 类型别名
 
-2. _resolve_target(snapshot, platform)
-   └─ element_ref → snapshot.find_element(id) → bbox中心点
-   └─ fallback → CoordinateConverter.to_physical(coord, window_rect)
-      └─ scale_factor × 逻辑坐标 = 物理像素
-      └─ 返回 (int(px), int(py))
-   └─ 都无 → GetCursorPos (兜底)
+2. _resolve_target(action, snapshot, converter, platform) → (x, y, window_rect)
+   ├─ element_ref → snapshot.find_element(id) → bbox中心点（window_rect=None）
+   ├─ fallback → CoordinateConverter.to_physical(coord, window_rect=前台窗口rect)
+   │  └─ CLAUDE_1024/GEMINI_1000 映射到窗口内部；PIXEL 原样物理像素
+   │  └─ window_rect 随结果返回，供宿主验证映射基准（None=全屏）
+   └─ 都无 → 前台窗口中心（无窗口则 (0,0)）
 
 3. _execute_one(cmd)
    ├─ click/double_click/right_click → mouse_click(x, y)

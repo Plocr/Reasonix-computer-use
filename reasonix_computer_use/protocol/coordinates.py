@@ -63,7 +63,10 @@ class NormalizedCoord:
                     "\"PIXEL\" (or use element_ref from an observe snapshot).")
         elif self.space == CoordinateSpace.GEMINI_1000:
             if not (0 <= self.x <= 999 and 0 <= self.y <= 999):
-                raise ValueError(f"GEMINI_1000 coords must be 0–999, got ({self.x}, {self.y})")
+                raise ValueError(
+                    f"GEMINI_1000 coords must be 0–999, got ({self.x}, {self.y}). "
+                    "If you meant physical screen pixels, set fallback.space="
+                    "\"PIXEL\" (or use element_ref from an observe snapshot).")
 
     def to_dict(self) -> dict:
         d = {"x": self.x, "y": self.y, "space": self.space.value}
@@ -194,8 +197,17 @@ class CoordinateConverter:
             # window_rect from DPI-aware APIs is already physical pixels
             vw = right - left
             vh = bottom - top
-            origin_x = left
-            origin_y = top
+            if vw <= 0 or vh <= 0:
+                # Defensive: an implausible window rect would map every
+                # normalized coordinate to a garbage pixel; fall back to
+                # the full display instead of producing off-screen clicks.
+                vw = self.display_width
+                vh = self.display_height
+                origin_x = 0
+                origin_y = 0
+            else:
+                origin_x = left
+                origin_y = top
         else:
             # display_width/height from system-index.json are already physical
             vw = self.display_width
@@ -238,8 +250,14 @@ class CoordinateConverter:
             left, top, right, bottom = window_rect
             vw = right - left
             vh = bottom - top
-            origin_x = left
-            origin_y = top
+            if vw <= 0 or vh <= 0:
+                vw = self.display_width
+                vh = self.display_height
+                origin_x = 0
+                origin_y = 0
+            else:
+                origin_x = left
+                origin_y = top
         else:
             vw = self.display_width
             vh = self.display_height
