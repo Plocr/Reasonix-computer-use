@@ -17,6 +17,7 @@ ELEMENT_REF).  Conversion to physical pixels happens internally.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, List, Optional
 
@@ -98,7 +99,7 @@ def _resolve_target(
                 "fresh element IDs")
         if el.bbox[2] <= el.bbox[0] or el.bbox[3] <= el.bbox[1]:
             raise ValueError(
-                f"element_ref '{action.element_ref}' has an empty bounding box")
+                f"element_ref {action.element_ref!r} has an empty bounding box")
         cx = (el.bbox[0] + el.bbox[2]) // 2
         cy = (el.bbox[1] + el.bbox[3]) // 2
         return (cx, cy, None)
@@ -115,12 +116,12 @@ def _resolve_target(
             window_rect = fg.rect
         x, y = converter.to_physical(action.fallback, window_rect=window_rect)
         # The rect echoed back is the one actually used (None = full display),
-        # so the host's 物理x - rect[0] verification stays truthful.
+        # so the host's (physical_x - rect[0]) verification stays truthful.
         return (x, y, window_rect)
 
     # 3. Ultimate fallback: center of foreground window (cross-platform safe)
     fg = platform.get_foreground_window()
-    if fg and fg.rect[2] > fg.rect[0]:
+    if fg and fg.rect[2] > fg.rect[0] and fg.rect[3] > fg.rect[1]:
         cx = (fg.rect[0] + fg.rect[2]) // 2
         cy = (fg.rect[1] + fg.rect[3]) // 2
         return (cx, cy, fg.rect)
@@ -240,7 +241,7 @@ class ScreenInteractor:
                 suggestion = _suggest_action(action_type)
                 hint = f" Did you mean '{suggestion}'?" if suggestion else ""
                 return {"status": "error", "code": "unknown_action_type",
-                        "message": f"Unknown action type: {action_type}.{hint}"
+                        "message": f"Unknown action type: {action_type!r}.{hint}"
                                    f" Valid types: {', '.join(sorted(ALL_ACTIONS))}"}
             parsed.append(ActionCommand.from_dict(act))
 
@@ -287,7 +288,6 @@ class ScreenInteractor:
         }
 
         # Auto-append lightweight observe snapshot after execute
-        import logging
         try:
             self._revision += 1
             snap = self._router.observe(max_elements=30)
