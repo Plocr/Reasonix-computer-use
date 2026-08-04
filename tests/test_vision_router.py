@@ -292,6 +292,46 @@ def test_mcp_boundary_returns_external_handoff_metadata(monkeypatch):
     assert "uncertain" in guarded["handoff_request"]["arguments"]["question"]
 
 
+def test_mcp_boundary_passes_structured_easyocr_elements_through(monkeypatch):
+    """EasyOCR structured text+bbox elements are plain JSON: a text-only
+    model can consume them exactly like UIA elements — no handoff needed.
+    Only image-only results (no elements) are replaced with a handoff."""
+    from reasonix_computer_use import mcp_server
+    from reasonix_computer_use.vision_router import VisionRoute
+
+    monkeypatch.setattr(mcp_server, "resolve_vision_route", lambda **_kwargs: VisionRoute(
+        "external", True, "test", "external_route_configured", model="mimo-v2.5",
+        server="mimo-mcp", tool="understand_image", handoff="agent"))
+
+    # EasyOCR snapshot WITH structured elements -> passes through unchanged
+    original = json.dumps({
+        "status": "ok", "source": "vision", "revision": "r5",
+        "elements": [{"id": "eocr_t0", "text": "播放", "role": "Text",
+                      "bbox": [10, 20, 60, 40]}],
+        "annotated_image": "annotated_r5.png",
+        "screenshot_path": "capture_r5.png",
+    })
+    guarded = mcp_server._guard_visual_result(
+        "screen_interactor", original, {"goal": "点击播放按钮"})
+    assert json.loads(guarded)["source"] == "vision"
+    assert json.loads(guarded)["status"] == "ok"
+
+    # Image-only result (no elements) -> still replaced with a handoff
+    original_img_only = json.dumps({
+        "status": "ok", "source": "vision", "revision": "r6",
+        "elements": [],
+        "annotated_image": "annotated_r6.png",
+        "screenshot_path": "capture_r6.png",
+    })
+    guarded_img = json.loads(mcp_server._guard_visual_result(
+        "screen_interactor", original_img_only, {"goal": "点击播放按钮"}))
+    assert guarded_img["status"] == "error"
+    assert guarded_img["code"] == "vision_handoff_required"
+    assert guarded_img["annotated_image"] == "annotated_r6.png"
+    # handoff_request still points at the captured image
+    assert guarded_img["handoff_request"]["arguments"]["images"] == ["annotated_r6.png"]
+
+
 def test_mcp_boundary_keeps_visual_result_for_native_model(monkeypatch):
     from reasonix_computer_use import mcp_server
     from reasonix_computer_use.vision_router import VisionRoute

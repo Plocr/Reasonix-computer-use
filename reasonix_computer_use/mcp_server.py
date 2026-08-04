@@ -237,6 +237,11 @@ def _guard_visual_result(tool_name: str, result: str,
     if not isinstance(parsed, dict) or parsed.get("status") != "ok" \
             or parsed.get("source") not in ("visual", "vision"):
         return result
+    # EasyOCR results are structured text+bbox elements (plain JSON) — a
+    # text-only model can consume them safely, exactly like UIA elements.
+    # Only image-only results (no elements) need a visual handoff.
+    if parsed.get("source") == "vision" and parsed.get("elements"):
+        return result
     route = route or resolve_vision_route(base_dir=Path(__file__).parents[1])
     if route.mode == "native":
         parsed["vision"] = route.as_dict()
