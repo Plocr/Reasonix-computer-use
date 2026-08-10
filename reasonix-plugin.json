@@ -1,30 +1,54 @@
 {
+  "apiVersion": "reasonix.io/plugin/v2",
   "name": "computer-use",
   "version": "0.9.0-preview",
   "description": "Reasonix Computer Use — cross-platform desktop automation. Precision-first (UIA/AXAPI/AT-SPI2) with vision fallback (EasyOCR), normalized coordinate protocol, and MCP tool suite.",
-  "skills": "skills",
-  "agents": ["agents"],
-  "commands": ["commands"],
-  "hooks": {
-    "SessionStart": [
-      {"command": "reasonix-computer-use.bat --hook", "description": "Declare explicit Computer Use activation"}
+  "contributes": {
+    "skills": [
+      "skills"
     ],
-    "UserPromptSubmit": [
-      {"command": "reasonix-computer-use.bat --hook", "description": "Activate only explicit run/operator tasks and clear ordinary prompts"}
+    "agents": [
+      "agents"
     ],
-    "PreToolUse": [
-      {"command": "reasonix-computer-use.bat --hook", "description": "Deny Computer Use outside an isolated active task"}
+    "commands": [
+      "commands"
     ],
-    "PostToolUse": [
-      {"command": "reasonix-computer-use.bat --hook", "description": "Track Computer Use attempts without logging user content"}
-    ],
-    "Stop": [
-      {"command": "reasonix-computer-use.bat --hook", "description": "Finish the redacted task trace"}
-    ]
-  },
-  "mcpServers": {
-    "computer-use": {
-      "command": "reasonix-computer-use.bat"
+    "hooks": {
+      "SessionStart": [
+        {
+          "command": "reasonix-computer-use.bat --hook",
+          "description": "Declare explicit Computer Use activation"
+        }
+      ],
+      "UserPromptSubmit": [
+        {
+          "command": "reasonix-computer-use.bat --hook",
+          "description": "Activate only explicit run/operator tasks and clear ordinary prompts"
+        }
+      ],
+      "PreToolUse": [
+        {
+          "command": "reasonix-computer-use.bat --hook",
+          "description": "Deny Computer Use outside an isolated active task"
+        }
+      ],
+      "PostToolUse": [
+        {
+          "command": "reasonix-computer-use.bat --hook",
+          "description": "Track Computer Use attempts without logging user content"
+        }
+      ],
+      "Stop": [
+        {
+          "command": "reasonix-computer-use.bat --hook",
+          "description": "Finish the redacted task trace"
+        }
+      ]
+    },
+    "mcpServers": {
+      "computer-use": {
+        "command": "reasonix-computer-use.bat"
+      }
     }
   }
 }
