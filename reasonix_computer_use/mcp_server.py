@@ -310,11 +310,14 @@ def _import_tools():
         )
         missing = missing_modules()
         if missing:
-            print(f"[startup] Missing: {missing}, installing...", flush=True)
+            # stdout is the JSON-RPC stream: a stray "[startup]" line there
+            # makes the host fail to parse the frame and look like the MCP
+            # server crashed (issue #2).
+            _log_stderr(f"[startup] Missing: {missing}, installing...")
             install_dependencies()
-            print(f"[startup] Dependencies installed.", flush=True)
+            _log_stderr("[startup] Dependencies installed.")
     except Exception as e:
-        print(f"[startup] Dep install skipped: {e}", flush=True)
+        _log_stderr(f"[startup] Dep install skipped: {e}")
 
     # ── Async: slow startup work in background ─────────────────────────
     # EasyOCR loads a large model (~hundreds of MB). Loading it at startup

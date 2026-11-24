@@ -305,6 +305,33 @@ def test_read_request_skips_blank_lines(monkeypatch):
     assert request == {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
 
 
+def test_log_stderr_never_writes_to_stdout(monkeypatch):
+    """Startup diagnostics on stdout corrupt the JSON-RPC stream (#2)."""
+    import io
+    import reasonix_computer_use.mcp_server as srv
+
+    out, err = io.StringIO(), io.StringIO()
+    monkeypatch.setattr(srv.sys, "stdout", out)
+    monkeypatch.setattr(srv.sys, "stderr", err)
+
+    srv._log_stderr("[startup] Missing: ['easyocr'], installing...")
+
+    assert out.getvalue() == ""
+    assert "[startup]" in err.getvalue()
+
+
+def test_no_bare_print_in_the_mcp_server():
+    """Any print() in the transport module must name an explicit stream."""
+    from pathlib import Path
+    import reasonix_computer_use.mcp_server as srv
+
+    source = Path(srv.__file__).read_text(encoding="utf-8")
+    for line in source.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("print("):
+            assert "file=" in stripped, f"stdout-polluting print: {stripped}"
+
+
 def test_main_loop_survives_bad_json_and_source_change(monkeypatch, capsys):
     import io
     import reasonix_computer_use.mcp_server as srv
