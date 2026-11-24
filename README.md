@@ -9,9 +9,13 @@
 > 旧版为 Windows 专用单体实现；新版抽出独立分层（protocol / platform / perception / services / tools），
 > 为三平台构建统一抽象接口，同一套公共时序与协议代码。
 
-> **维护状态（2026-11）**：功能已完备，进入**低维护期**。不新增平台或大功能；
-> 安装/装不上、崩溃、静默失败这类阻断问题优先修，其余按时间处理。
-> 0.9.0-preview 已一次性关闭 #1–#7（manifest v2、OCR 模式、批次中止、另存为、MCP 稳定性）。
+> **项目状态（2026-11）**：上游 Reasonix 已停止维护，本仓库随之**归档**——不再跟进新版兼容，
+> 也不做功能迭代。代码保留为一份可运行的历史实现：三平台感知与输入层、归一化坐标协议、
+> MCP 工具面、技能与钩子都按原样可用（`pip install -e ".[dev]"` 后 `pytest` 全绿）。
+> 比代码更有复用价值的是下面「[设计要点](#-设计要点可复用)」里那批取舍——它们与宿主无关，
+> 可以整体搬到别的 computer-use 运行时或研究代码里。最后一批修复（0.9.0-preview）已并入
+> `main`：manifest 对 Reasonix **v1.17 与 v1.22+ 双向可装**（实测 `--dry-run` 均 `compatibility: full`），
+> `mode: "ocr"` 生效，单步失败不再中止批次，MCP 主循环不再因心跳行/热更新退出。
 
 ## ✨ 特性
 
@@ -37,6 +41,28 @@
 | Linux (Wayland) | ⬜ 受限 | ⬜ 不可用 | ⬜ | ⬜ | 全局坐标/注入不可用 → 自动降级视觉层 |
 | **macOS** | ✅ AXAPI (PyObjC) | ✅ CGEvent | ✅ mss | ✅ ffmpeg avfoundation | **已实现**（macOS CI 验证），需**辅助功能 + 屏幕录制**权限 |
 | macOS (无权限) | ⬜ 受限 | ⬜ 不可用 | ⬜ | ⬜ | 未授权 → 自动降级视觉层，注入操作给出明确指引 |
+
+## 🧭 设计要点（可复用）
+
+这一节是这个项目真正值得留下的东西：桌面自动化里那些**看上去是细节、实际决定成败**的取舍。
+每一条都对应代码里的具体位置，可以单独摘出去用在别的宿主上。
+
+| # | 设计 | 具体做法 | 作用 | 位置 |
+|---|---|---|---|---|
+| 1 | **感知分层 + 自适应黑名单** | 精准层（UIA/AXAPI/AT-SPI2）优先；返回空则把该窗口拉黑 60s 后重试，期间走视觉层 | 自绘 UI（QQ 音乐）、WebView2 应用不会让整条链路卡死在不可用的一层；UI 改版后自动恢复 | `perception/router.py` |
+| 2 | **显式 mode 覆盖隐式缓存** | `observe_mode: auto\|ocr\|precision`；`ocr` 强制截屏+OCR，`precision` 忽略黑名单 | "上次 UIA 有结果"不能成为本次拒绝 OCR 的理由——无 aria 的纯图标按钮只有 OCR 能看见 | `tools/screen_interactor.py` / `perception/router.py` |
+| 3 | **归一化坐标协议** | `ELEMENT_REF` / `CLAUDE_1024` / `GEMINI_1000` / `PIXEL` 四空间，窗口内映射，响应回显 `window_rect` 与物理 `x/y` | 模型输出的坐标系与真实屏幕解耦；落点可回验（`窗口内x = 物理x - window_rect[0]`），点空箱能当场定位 | `protocol/coordinates.py` |
+| 4 | **revision + stale 拒绝** | 每次 observe 递增 revision；execute 带旧 revision 直接拒执行 | UI 变化后不会按过期元素坐标误点（误点搜索框/按钮是这类工具最常见的破坏性失败） | `tools/screen_interactor.py` |
+| 5 | **单步失败不中止批次** | 批内任一动作失败/抛异常都继续，错误进顶层 `warnings`，另附 `after` 快照 | `type` 后紧跟的 `ENTER` 不会被前一步的校验失败吞掉；模型能按条自纠而不是整批重跑 | `tools/screen_interactor.py` |
+| 6 | **不做事后 OCR 字面校验** | `type` 返回 `input_verification: "unverified"`，验证交给 `expect` / `after` | 计算器把 `1024*768` 渲染成 `1024 × 768`，字面匹配按构造不可能通过——校验方式错了，验证就永远失败 | `tools/screen_interactor.py` |
+| 7 | **输入防重放的哈希熔断** | 写入前先跨进程落盘签名（应用/窗口类/任务/revision/文本哈希），TTL 600s，锁失败 fail-open | 崩溃重启后不会把同一段文本盲注第二遍；guard 自身故障绝不阻塞正常输入 | `input_guard.py` |
+| 8 | **写文件类动作的"宁可失败"** | `save_as`：快捷键 → 校验前台窗口标题确实是文件对话框 → 注入路径 → 回车；**没检测到对话框一个字符都不输** | 路径写进正文是静默数据破坏；宁可返回 `save_dialog_not_detected` 让人/模型改走菜单 | `tools/screen_interactor.py` |
+| 9 | **manifest 双写兼容** | `apiVersion: reasonix.io/plugin/v2` + `contributes`（含 `agents`），同时在根级保留 v1.x 认识的 `skills/commands/hooks/mcpServers`，且**根级不放 `agents`** | 同一份包在 v1.17（只读根级）和 v1.22+（只认 contributes，且拒绝根级 `agents`）都能装——实测两版 `--dry-run` 均 `compatibility: full` | `reasonix-plugin.json` |
+| 10 | **默认关闭（fail-closed）** | 钩子按"显式任务"激活，普通对话不创建 trace、不授予操作权限 | 桌面自动化天然高危，能力必须由用户显式开启，而不是靠模型自觉 | `hooks/route_guard.py` |
+| 11 | **MCP 传输层要"钝"** | 空行=心跳不是 EOF；坏 JSON 跳过；插件热更新返回可重试错误继续服务；诊断只写 stderr | stdio 协议上一个空行就能让服务端退出，宿主侧表现为"插件崩了必须重启" | `mcp_server.py` |
+
+如果只搬三样：**2（显式 mode）**、**5+6（失败语义）**、**8（写文件守卫）**——
+它们解决的都是"不报错但结果错"的静默失败，比任何识别精度提升都更能决定任务成功率。
 
 ## 🚀 快速开始
 
@@ -259,14 +285,14 @@ python -m pytest -q -p no:warnings
 
 ## 📦 版本历史
 
-**0.9.0-preview 收尾修复（issue #1–#7）**：
+**0.9.0-preview 收尾修复（对照下游反馈 #1–#7）**：
 
-- **manifest 迁移 `reasonix.io/plugin/v2`**：声明 `apiVersion`，`skills/agents/commands/hooks/mcpServers` 收进 `contributes`，`reasonix plugin install` 与市场审核均可通过（#4 / #5 / #6 / #7）
-- **`mode: "ocr"` 真正生效**：新增 `observe_mode: auto|ocr|precision`；显式 OCR 请求强制截屏 + OCR，不再被精准层的缓存结果短路；响应回传 `requested_mode` / `vision_available` / `vision_used`（#3）
-- **批次不再被单步失败吞掉**：`type` 的 OCR 字面匹配校验取消，改为 `input_verification: "unverified"`；任何单步失败继续执行后续动作，错误汇总到顶层 `warnings`（#1）
-- **`save_as` 动作**：另存为/导出对话框驱动（快捷键 → 校验对话框标题 → 注入路径 → 回车），未检测到对话框时绝不注入，避免路径跑进正文（#2）
-- **MCP 主循环加固**：空白心跳行不再被当作 EOF 退出；坏 JSON 跳过而非杀进程；插件热更新后继续服务并返回可重试错误（#2）
-- 新增 12 条 issue 回归测试，全量 **196 passed / 195 skipped**
+- **manifest 双向兼容**：声明 `apiVersion: reasonix.io/plugin/v2`，资源写进 `contributes`（含 `agents`），根级保留 v1.x 认得的字段但**不放 `agents`**；v1.17 与 v1.22+ 实测均可安装（`compatibility: full`）
+- **`mode: "ocr"` 真正生效**：新增 `observe_mode: auto|ocr|precision`；显式 OCR 请求强制截屏 + OCR，不再被精准层结果短路；响应回传 `requested_mode` / `vision_available` / `vision_used`（#3）
+- **批次不再被单步失败吞掉**：取消 `type` 的 OCR 字面匹配校验，改为 `input_verification: "unverified"`；单步失败继续执行后续动作，错误汇总到顶层 `warnings`（#1）
+- **`save_as` 动作**：另存为/导出对话框驱动，未检测到对话框时绝不注入，避免路径跑进正文（#2）
+- **MCP 主循环加固**：空白心跳行不再当作 EOF 退出；坏 JSON 跳过而非杀进程；插件热更新后继续服务并返回可重试错误（#2）
+- 新增 12 条回归测试，全量 **196 passed / 195 skipped**
 
 **0.9.0-preview** — 三平台统一预览版：
 

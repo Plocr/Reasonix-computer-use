@@ -233,8 +233,14 @@ def test_capability_runner_and_matrix_contract():
 def test_commands_are_reasonix_13_templates():
     root = Path(__file__).resolve().parent.parent
     manifest = json.loads((root / "reasonix-plugin.json").read_text(encoding="utf-8"))
-    assert manifest["commands"] == ["commands"]
-    assert manifest["agents"] == ["agents"]
+    # v2 manifests must declare apiVersion and may only expose agents under
+    # contributes (Reasonix v1.22 rejects a root-level "agents" field).
+    assert manifest["apiVersion"] == "reasonix.io/plugin/v2"
+    contributes = manifest["contributes"]
+    assert contributes["commands"] == ["commands"]
+    assert contributes["agents"] == ["agents"]
+    assert manifest["commands"] == ["commands"]  # root-level mirror for v1.x hosts
+    assert "agents" not in manifest
     commands = {path.stem: path.read_text(encoding="utf-8") for path in (root / "commands").rglob("*.md")}
     assert set(commands) == {"doctor", "test", "trace", "benchmark", "run", "operator"}
     assert all("description:" in value for value in commands.values())
