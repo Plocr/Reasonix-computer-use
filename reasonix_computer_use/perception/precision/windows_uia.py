@@ -191,6 +191,7 @@ def _walk(element, max_depth: int = 15):
             constants.UIA_ClassNamePropertyId,
             constants.UIA_IsEnabledPropertyId,
             constants.UIA_IsOffscreenPropertyId,
+            constants.UIA_HasKeyboardFocusPropertyId,
         ):
             request.AddProperty(property_id)
         descendants = element.FindAllBuildCache(

@@ -116,6 +116,7 @@ class PerceptionRouter:
         window_id: Optional[str] = None,
         max_elements: int = 80,
         force_vision: bool = False,
+        prefer_precision: bool = False,
     ) -> ScreenSnapshot:
         """Observe a window, preferring precision over vision.
 
@@ -123,6 +124,8 @@ class PerceptionRouter:
             window_id: Platform window ID. None = foreground.
             max_elements: Max elements to return.
             force_vision: Skip precision and go directly to OCR.
+            prefer_precision: Explicit precision request — ignore the
+                temporary blacklist instead of downgrading to vision.
 
         Returns:
             ScreenSnapshot with structured element data.
@@ -134,7 +137,10 @@ class PerceptionRouter:
             window_key = self._resolve_foreground_key()
 
         # ── Skip precision if this window was previously blacklisted ─────
-        if self._is_blacklisted(window_key):
+        # An explicit precision request overrides the blacklist; an explicit
+        # OCR request overrides everything (issue #3: a cached precision
+        # result must never satisfy mode="ocr").
+        if self._is_blacklisted(window_key) and not prefer_precision:
             force_vision = True
 
         # ── Try precision first (if not blacklisted) ─────────────────────

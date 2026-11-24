@@ -66,6 +66,14 @@ PIXEL (raw, needs resolution context), ELEMENT_REF (element ID, recommended)."""
                 "type": "boolean", "default": False,
                 "description": "Skip precision layer, go directly to OCR (observe mode)."
             },
+            "observe_mode": {
+                "type": "string",
+                "enum": ["auto", "ocr", "precision"],
+                "description": ("observe mode layer selection. 'ocr' forces a screenshot+OCR pass "
+                                "(never satisfied by an earlier precision result); 'precision' "
+                                "forces UIA/AXAPI/AT-SPI2 even for a temporarily blacklisted window; "
+                                "'auto' keeps the precision-first strategy.")
+            },
             "actions": {
                 "type": "array",
                 "items": {"type": "object"},
@@ -96,6 +104,7 @@ async def screen_interactor(args: dict) -> str:
             window_id=args.get("window_id"),
             max_elements=args.get("max_elements", 80),
             force_vision=args.get("force_vision", False),
+            mode=args.get("observe_mode"),
         )
     elif mode == "execute":
         result = await si.execute(
@@ -134,6 +143,7 @@ Operations:
             "confirmed": {"type": "boolean", "default": False},
             "query": {"type": "string", "description": "File search query."},
             "folder": {"type": "string", "default": "desktop"},
+            "trace_id": {"type": "string", "description": "Trace ID to read (operation=trace)."},
             "command": {"type": "string", "description": "Read-only diagnostic command."},
         },
         "required": ["operation"],
@@ -152,6 +162,7 @@ async def computer_system(args: dict) -> str:
         "diagnose": cs.diagnose,
         "setup": lambda: cs.setup(args.get("confirmed", False)),
         "setup_status": cs.setup_status,
+        "trace": lambda: cs.trace(args.get("trace_id", "")),
         "command": lambda: cs.command(args.get("command", "")),
         "file": lambda: cs.file_search(args.get("query", ""), args.get("folder", "desktop")),
         "window": cs.window_list,
@@ -193,7 +204,6 @@ Operations:
         },
         "required": ["operation"],
     },
-    read_only=True,
 )
 async def web_navigator(args: dict) -> str:
     import json
@@ -239,6 +249,7 @@ Prefer screen_interactor for observation and action execution.""",
             "window_id": {"type": "string"},
             "close_mode": {"type": "string", "enum": ["window", "process"]},
             "confirmed": {"type": "boolean", "default": False},
+            "rescan": {"type": "boolean", "default": False, "description": "Force a full app re-scan (search operation)."},
             "limit": {"type": "integer", "default": 10},
         },
         "required": ["operation"],
@@ -260,19 +271,25 @@ async def computer_app(args: dict) -> str:
         }, ensure_ascii=False)
 
     if op == "search":
-        # Live re-scan and update system image
+        # Search uses the existing system index. A full re-scan (registry +
+        # shortcuts + drives) is only performed when the index is missing or
+        # explicitly requested via rescan=true — never on every search.
         import json as _j
         try:
             from ..services import get_profiler
             profiler = get_profiler()
-            profiler.profile("search rescan")
             index = profiler.load_index()
             apps = index.get("applications", [])
+            if (not index or not index.get("system") or not apps) or args.get("rescan"):
+                profiler.profile("search rescan")
+                index = profiler.load_index()
+                apps = index.get("applications", [])
             query = args.get("query", "").lower()
             matches = [a for a in apps if query in a.get("name","").lower()][:20]
             return _j.dumps({
                 "status": "ok", "total_apps": len(apps),
-                "matches": matches, "count": len(matches)
+                "matches": matches, "count": len(matches),
+                "rescan": bool(args.get("rescan")),
             }, ensure_ascii=False)
         except Exception as e:
             return _j.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
@@ -412,12 +429,25 @@ async def computer_app(args: dict) -> str:
 
 @register_tool(
     name="computer_state",
-    description="""Legacy alias for screen_interactor(observe). Returns structured screen snapshot.""",
+    description="""Legacy alias for screen_interactor(observe). Returns structured screen snapshot.
+
+`mode` selects the perception layer and is honoured (it used to be silently
+dropped, which made icon-only WebView2 controls unreachable):
+  auto      — precision-first, vision fallback (default)
+  ocr       — force screenshot + OCR; never satisfied by a cached UIA result
+  precision — force UIA/AXAPI/AT-SPI2, ignoring the temporary blacklist""",
     schema={
         "type": "object",
         "properties": {
             "window_id": {"type": "string"},
             "max_elements": {"type": "integer", "default": 80},
+            "operation": {"type": "string", "description": "Ignored (legacy hosts send 'state')."},
+            "mode": {
+                "type": "string", "default": "auto",
+                "enum": ["auto", "ocr", "vision", "precision", "uia"],
+                "description": "Perception layer: auto | ocr | precision.",
+            },
+            "force_vision": {"type": "boolean", "default": False},
         },
     },
     read_only=True,
@@ -425,7 +455,12 @@ async def computer_app(args: dict) -> str:
 async def computer_state(args: dict) -> str:
     import json
     si = _get_si()
-    result = await si.observe(window_id=args.get("window_id"), max_elements=args.get("max_elements", 80))
+    result = await si.observe(
+        window_id=args.get("window_id"),
+        max_elements=args.get("max_elements", 80),
+        force_vision=bool(args.get("force_vision", False)),
+        mode=args.get("mode"),
+    )
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -454,31 +489,129 @@ async def computer_action(args: dict) -> str:
 @register_tool(
     name="mouse_action",
     description="[HIDDEN] Raw mouse operations with normalized coordinates. Internal use only.",
-    schema={"type": "object", "properties": {}},
+    schema={
+        "type": "object",
+        "properties": {
+            "operation": {"type": "string", "enum": ["click", "double_click", "right_click", "drag", "scroll"]},
+            "x": {"type": "integer", "description": "Normalized x coordinate."},
+            "y": {"type": "integer", "description": "Normalized y coordinate."},
+            "space": {"type": "string", "enum": ["CLAUDE_1024", "GEMINI_1000", "PIXEL"], "default": "CLAUDE_1024"},
+            "to_x": {"type": "integer", "description": "Drag destination x (PIXEL)."},
+            "to_y": {"type": "integer", "description": "Drag destination y (PIXEL)."},
+            "amount": {"type": "integer", "default": 3, "description": "Scroll amount (positive = down/right)."},
+            "direction": {"type": "string", "enum": ["vertical", "up", "down", "left", "right"], "default": "vertical"},
+            "duration": {"type": "number", "default": 0.5, "description": "Drag duration in seconds."},
+        },
+        "required": ["operation"],
+    },
 )
 async def mouse_action(args: dict) -> str:
-    return '{"status":"ok","note":"hidden tool — use screen_interactor instead"}'
+    import json
+    from .hidden.actions import HiddenMouse
+    from ..protocol import NormalizedCoord, CoordinateSpace
+
+    mouse = HiddenMouse()
+    op = args.get("operation", "click")
+    coord = NormalizedCoord(
+        x=int(args.get("x", 0)),
+        y=int(args.get("y", 0)),
+        space=CoordinateSpace(args.get("space", "CLAUDE_1024")),
+    )
+    if op == "click":
+        result = mouse.click(coord, button="left", count=1)
+    elif op == "double_click":
+        result = mouse.double_click(coord)
+    elif op == "right_click":
+        result = mouse.right_click(coord)
+    elif op == "drag":
+        to_x = int(args.get("to_x", args.get("x", 0)))
+        to_y = int(args.get("to_y", args.get("y", 0)))
+        to_coord = NormalizedCoord(x=to_x, y=to_y, space=CoordinateSpace.PIXEL)
+        result = mouse.drag(coord, to_coord, duration=float(args.get("duration", 0.5)))
+    elif op == "scroll":
+        result = mouse.scroll(coord, amount=int(args.get("amount", 3)),
+                              direction=str(args.get("direction", "vertical")))
+    else:
+        result = {"status": "error", "code": "unknown_operation", "message": f"Unknown operation: {op}"}
+    return json.dumps(result, ensure_ascii=False)
+
 
 @register_tool(
     name="keyboard_action",
     description="[HIDDEN] Raw keyboard operations. Internal use only.",
-    schema={"type": "object", "properties": {}},
+    schema={
+        "type": "object",
+        "properties": {
+            "operation": {"type": "string", "enum": ["type", "press", "key_down", "key_up"]},
+            "text": {"type": "string", "description": "Text to type (operation=type)."},
+            "keys": {"type": "array", "items": {"type": "string"}, "description": "Key combination (operation=press)."},
+            "key": {"type": "string", "description": "Single key (operation=key_down/key_up)."},
+        },
+        "required": ["operation"],
+    },
 )
 async def keyboard_action(args: dict) -> str:
-    return '{"status":"ok","note":"hidden tool — use screen_interactor instead"}'
+    import json
+    from .hidden.actions import HiddenKeyboard
+
+    keyboard = HiddenKeyboard()
+    op = args.get("operation", "type")
+    if op == "type":
+        result = keyboard.type(str(args.get("text", "")))
+    elif op == "press":
+        keys = args.get("keys") or ([args.get("key")] if args.get("key") else [])
+        result = keyboard.press([str(k) for k in keys]) if keys else \
+            {"status": "error", "code": "missing_keys", "message": "press requires keys"}
+    elif op == "key_down":
+        result = keyboard.key_down(str(args.get("key", "")))
+    elif op == "key_up":
+        result = keyboard.key_up(str(args.get("key", "")))
+    else:
+        result = {"status": "error", "code": "unknown_operation", "message": f"Unknown operation: {op}"}
+    return json.dumps(result, ensure_ascii=False)
+
 
 @register_tool(
     name="screenshot",
     description="[HIDDEN] Screen capture to Downloads. Internal use only.",
-    schema={"type": "object", "properties": {}},
+    schema={
+        "type": "object",
+        "properties": {
+            "filename": {"type": "string", "description": "Optional output filename (default: screenshot_<timestamp>.png)."},
+        },
+    },
 )
 async def screenshot(args: dict) -> str:
-    return '{"status":"ok","note":"hidden tool — use screen_interactor instead"}'
+    import json
+    from .hidden.actions import HiddenScreenshot
+
+    capture = HiddenScreenshot()
+    result = capture.capture(filename=args.get("filename"))
+    return json.dumps(result, ensure_ascii=False)
+
 
 @register_tool(
     name="screen_recorder",
     description="[HIDDEN] Screen recording (system-native). Internal use only.",
-    schema={"type": "object", "properties": {}},
+    schema={
+        "type": "object",
+        "properties": {
+            "operation": {"type": "string", "enum": ["start", "stop"]},
+            "filename": {"type": "string", "description": "Optional output filename (operation=start)."},
+        },
+        "required": ["operation"],
+    },
 )
 async def screen_recorder(args: dict) -> str:
-    return '{"status":"ok","note":"hidden tool — use screen_interactor instead"}'
+    import json
+    from .hidden.actions import HiddenScreenRecorder
+
+    recorder = HiddenScreenRecorder()
+    op = args.get("operation", "start")
+    if op == "start":
+        result = recorder.start(filename=args.get("filename"))
+    elif op == "stop":
+        result = recorder.stop()
+    else:
+        result = {"status": "error", "code": "unknown_operation", "message": f"Unknown operation: {op}"}
+    return json.dumps(result, ensure_ascii=False)

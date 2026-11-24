@@ -10,6 +10,7 @@ This provider does NOT make decisions — it only returns coordinates and text.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import time
 from typing import List, Optional
@@ -45,6 +46,7 @@ def _easyocr_available() -> bool:
 
 _reader = None
 _last_annotated: Optional[str] = None  # Path to last annotated screenshot
+_ANNOTATION_COUNTER = itertools.count(1)  # avoids same-second filename collisions
 
 
 def cleanup_annotations():
@@ -55,6 +57,26 @@ def cleanup_annotations():
         for f in glob.glob(os.path.join(tmp_dir, "annotated_*.png")):
             os.remove(f)
             logger.debug("Cleaned annotation: %s", f)
+    except Exception:
+        pass
+
+
+def _prune_annotations(keep: int = 10) -> None:
+    """Keep only the most recent N annotated screenshots (crash-safe cleanup).
+
+    ``cleanup_annotations`` runs on the Stop hook, but a crashed task never
+    reaches it; prune-on-write bounds the directory at all times.
+    """
+    import os, glob
+    try:
+        tmp_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "memory", "screenshots")
+        files = sorted(glob.glob(os.path.join(tmp_dir, "annotated_*.png")),
+                       key=os.path.getmtime, reverse=True)
+        for stale in files[max(0, keep):]:
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
     except Exception:
         pass
 
@@ -204,7 +226,10 @@ class EasyOCRVision(PerceptionProvider):
         tmp_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "memory", "screenshots")
         os.makedirs(tmp_dir, exist_ok=True)
         ts = _time.strftime("%Y%m%d_%H%M%S")
-        img_name = f"annotated_{ts}.png"
+        # Millisecond precision plus a process counter: same-second observes
+        # must never overwrite each other's annotation file.
+        ms = int((time.time() % 1) * 1000)
+        img_name = f"annotated_{ts}_{ms:03d}_{next(_ANNOTATION_COUNTER):04d}.png"
         img_path = os.path.join(tmp_dir, img_name)
         if not cv2.imwrite(img_path, annotated):
             logger.warning("Failed to write annotated screenshot: %s", img_path)
@@ -213,6 +238,8 @@ class EasyOCRVision(PerceptionProvider):
         # Store last annotated path for the observe response
         global _last_annotated
         _last_annotated = img_abs
+        # Bounded directory even if the Stop hook never runs (crashed task).
+        _prune_annotations(keep=10)
 
         # 4. Enrich UI components with nearby OCR text
         def _enrich_ui_box(box: dict) -> tuple[str, str]:

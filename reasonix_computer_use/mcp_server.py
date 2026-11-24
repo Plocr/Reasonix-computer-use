@@ -22,15 +22,26 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
         pass
 
 
+def _log_stderr(message: str) -> None:
+    """Diagnostics go to stderr — stdout carries the JSON-RPC stream only."""
+    try:
+        print(message, file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
+
 async def read_request() -> dict[str, Any] | None:
     """Read a JSON-RPC request from stdin."""
-    line = await asyncio.to_thread(sys.stdin.readline)
-    if not line:
-        return None
-    line = line.strip()
-    if not line:
-        return None
-    return json.loads(line)
+    while True:
+        line = await asyncio.to_thread(sys.stdin.readline)
+        if not line:
+            return None
+        stripped = line.strip()
+        if not stripped:
+            # A blank keepalive line is not end-of-stream: treating it as EOF
+            # shut the whole server down mid-session (issue #2).
+            continue
+        return json.loads(stripped)
 
 
 async def write_response(response: dict[str, Any]) -> None:
@@ -305,19 +316,28 @@ def _import_tools():
     except Exception as e:
         print(f"[startup] Dep install skipped: {e}", flush=True)
 
-    # ── Async: slow startup (profile, OCR prewarm) in background ────────
+    # ── Async: slow startup work in background ─────────────────────────
+    # EasyOCR loads a large model (~hundreds of MB). Loading it at startup
+    # costs every user, including text-only sessions that never touch the
+    # vision fallback — so the reader is lazy by default and prewarm only
+    # runs when explicitly requested (REASONIX_COMPUTER_USE_PREWARM_OCR=1).
+    # The system profile is likewise only rebuilt in the background when the
+    # index is missing; a stale-but-present index is never re-generated here.
     import threading
 
     def _bg():
         try:
             from reasonix_computer_use.perception.vision.easy_ocr import _easyocr_available, _get_reader
-            if _easyocr_available():
+            prewarm = os.environ.get("REASONIX_COMPUTER_USE_PREWARM_OCR", "").strip().casefold()
+            if _easyocr_available() and prewarm in {"1", "true", "yes", "on"}:
                 _get_reader()  # prewarm EasyOCR GPU models
         except Exception:
             pass
         try:
             from reasonix_computer_use.services import get_profiler
-            get_profiler().profile("mcp startup")
+            profiler = get_profiler()
+            if not profiler.load_index().get("system"):
+                profiler.profile("mcp startup")
         except Exception:
             pass
 
@@ -333,22 +353,35 @@ async def main() -> None:
     while True:
         try:
             request = await read_request()
-        except (json.JSONDecodeError, ConnectionError):
+        except json.JSONDecodeError as exc:
+            # Malformed line: the line is already consumed, so skipping it
+            # keeps the session alive instead of killing the server.
+            _log_stderr(f"[loop] invalid JSON request skipped: {exc}")
+            continue
+        except (ConnectionError, OSError) as exc:
+            _log_stderr(f"[loop] stdin closed: {exc!r}")
             break
-        
+        except Exception as exc:  # never let a read bug kill the session
+            _log_stderr(f"[loop] read failed: {exc!r}")
+            break
+
         if request is None:
             break
-        
+
         method = request.get("method", "")
         request_id = request.get("id")
         params = request.get("params", {})
 
         if _source_signature() != _STARTUP_SOURCE_SIGNATURE:
+            # The plugin was updated on disk.  Keep the loop alive and tell the
+            # host to retry; exiting here looked like an MCP crash and forced a
+            # Reasonix restart (issue #2).
             await write_response(create_error(
                 request_id, -32002,
-                "Computer Use 插件已更新，旧 MCP 服务正在退出；请重试当前工具调用"))
-            break
-        
+                "Computer Use 插件已更新，当前 MCP 服务仍运行旧代码；请重试当前工具调用"
+                "（Reasonix 会在插件变更后重启本服务）"))
+            continue
+
         if method == "initialize":
             response = await handle_initialize(request_id)
         elif method == "tools/list":
@@ -357,8 +390,12 @@ async def main() -> None:
             response = await handle_tools_call(request_id, params)
         else:
             response = create_error(request_id, -32601, f"Method not found: {method}")
-        
-        await write_response(response)
+
+        try:
+            await write_response(response)
+        except (BrokenPipeError, ConnectionError, OSError) as exc:
+            _log_stderr(f"[loop] stdout closed: {exc!r}")
+            break
 
 
 if __name__ == "__main__":

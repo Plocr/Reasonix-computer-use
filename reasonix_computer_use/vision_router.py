@@ -16,7 +16,11 @@ from __future__ import annotations
 import json
 import os
 import re
-import tomllib
+
+try:
+    import tomllib  # Python 3.11+
+except ImportError:  # Python 3.10 fallback
+    import tomli as tomllib  # type: ignore[no-redef]
 from urllib.parse import urlparse
 from dataclasses import asdict, dataclass
 from pathlib import Path

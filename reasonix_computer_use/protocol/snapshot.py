@@ -121,6 +121,7 @@ class ActionCommand:
     duration: float = 0.0                   # for "drag" / "wait"
     to_x: Optional[int] = None              # for "drag": destination x (physical px)
     to_y: Optional[int] = None              # for "drag": destination y (physical px)
+    path: str = ""                          # for "save_as": target file path
 
     def to_dict(self) -> dict:
         d: dict = {"type": self.type}
@@ -140,6 +141,8 @@ class ActionCommand:
             d["to_x"] = self.to_x
         if self.to_y is not None:
             d["to_y"] = self.to_y
+        if self.path:
+            d["path"] = self.path
         return d
 
     @classmethod
@@ -191,4 +194,5 @@ class ActionCommand:
             duration=float(d.get("duration", 0.0)),
             to_x=d.get("to_x"),
             to_y=d.get("to_y"),
+            path=str(d.get("path", d.get("file", d.get("filename", ""))) or ""),
         )

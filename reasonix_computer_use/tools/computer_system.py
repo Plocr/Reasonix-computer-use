@@ -142,6 +142,22 @@ class ComputerSystem:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
+    # ── Trace ───────────────────────────────────────────────────────────────
+
+    async def trace(self, trace_id: str = "") -> dict:
+        """List recent task traces, or read a single trace by ID."""
+        try:
+            from ..trace import list_traces, read_trace
+            if trace_id:
+                document = read_trace(trace_id)
+                if not document:
+                    return {"status": "error", "code": "trace_not_found",
+                            "message": f"Trace not found: {trace_id}"}
+                return {"status": "ok", "trace": document}
+            return {"status": "ok", "traces": list_traces()}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
     # ── Command ────────────────────────────────────────────────────────────
 
     async def command(self, cmd: str) -> dict:
@@ -198,6 +214,7 @@ class ComputerSystem:
             result = subprocess.run(
                 tokens, shell=False,
                 capture_output=True, text=True,
+                errors="replace",
                 timeout=30,
             )
             return {

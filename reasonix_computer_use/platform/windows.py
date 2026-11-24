@@ -131,9 +131,16 @@ def _resolve_vk(name: str) -> int:
     vk = VK_MAP.get(key)
     if vk is not None:
         return vk
-    # Single printable ASCII → uppercase VK
+    # Single printable ASCII → uppercase VK. Non-ASCII single characters
+    # (e.g. a CJK glyph) have no virtual key — refuse them instead of
+    # stuffing a truncated code point into a 16-bit WORD.
     if len(key) == 1:
-        return ord(key.upper())
+        code = ord(key)
+        if code < 128:
+            return ord(key.upper())
+        raise ValueError(
+            f"Unsupported key: {name!r} — single-character keys must be ASCII; "
+            "use the type action for non-ASCII text")
     raise ValueError(f"Unknown key: {name}")
 
 
@@ -208,6 +215,40 @@ def _send_input(events: list[tuple[int, int, int]]) -> None:
                     "请以管理员权限运行 Reasonix，或以普通权限启动目标应用)")
         raise OSError(
             f"SendInput injected {sent}/{len(inputs)} keyboard events"
+            f" (GetLastError={last_error}){hint}")
+
+
+def _send_mouse_input(events: list[tuple[int, int]]) -> None:
+    """Send mouse INPUT events (flags, mouseData) and verify injection.
+
+    Button down/up and wheel events carry no movement, so dx/dy are 0 and
+    the cursor position set beforehand by SetCursorPos is used.  Unlike the
+    legacy mouse_event API, SendInput returns the number of injected events,
+    which lets us detect a UIPI block (elevated target window) instead of
+    failing silently.
+    """
+    inputs = (_INPUT * len(events))()
+    for i, (flags, data) in enumerate(events):
+        slot = inputs[i]
+        slot.type = 0  # INPUT_MOUSE
+        slot.union.mi.dx = 0
+        slot.union.mi.dy = 0
+        slot.union.mi.mouseData = data
+        slot.union.mi.dwFlags = flags
+        slot.union.mi.time = 0
+        slot.union.mi.dwExtraInfo = None
+    sent = user32.SendInput(len(inputs), inputs, ctypes.sizeof(_INPUT))
+    if sent != len(inputs):
+        try:
+            last_error = ctypes.windll.kernel32.GetLastError()
+        except (AttributeError, OSError):
+            last_error = None
+        hint = ""
+        if last_error == 5:
+            hint = (" (UIPI: 目标窗口以管理员权限运行，鼠标注入被系统拦截；"
+                    "请以管理员权限运行 Reasonix，或以普通权限启动目标应用)")
+        raise OSError(
+            f"SendInput injected {sent}/{len(inputs)} mouse events"
             f" (GetLastError={last_error}){hint}")
 
 
@@ -293,12 +334,16 @@ class WindowsPlatformProvider(PlatformProvider):
         self.mouse_move(x, y)
         time.sleep(MOVE_SETTLE)
 
+        # Each click is injected separately to preserve the human rhythm:
+        # PRESS_HOLD between down/up and CLICK_GAP between clicks.  Self-
+        # drawn UIs (QQ Music, CEF apps) misread machine-speed double clicks
+        # as two single clicks.
         for i in range(count):
-            user32.mouse_event(down_flag, 0, 0, 0, 0)
+            _send_mouse_input([(down_flag, 0)])
             try:
                 time.sleep(PRESS_HOLD)
             finally:
-                user32.mouse_event(up_flag, 0, 0, 0, 0)
+                _send_mouse_input([(up_flag, 0)])
             if i + 1 < count:
                 time.sleep(CLICK_GAP)
 
@@ -318,7 +363,7 @@ class WindowsPlatformProvider(PlatformProvider):
             if not user32.SetCursorPos(from_x, from_y):
                 raise ctypes.WinError()
             try:
-                user32.mouse_event(down_flag, 0, 0, 0, 0)
+                _send_mouse_input([(down_flag, 0)])
                 pressed = True
                 time.sleep(MOVE_SETTLE)
                 for cx, cy in points:
@@ -327,7 +372,7 @@ class WindowsPlatformProvider(PlatformProvider):
                     time.sleep(delay)
             finally:
                 if pressed:
-                    user32.mouse_event(up_flag, 0, 0, 0, 0)
+                    _send_mouse_input([(up_flag, 0)])
 
     def mouse_scroll(self, x: int, y: int, amount: int,
                      direction: str = "vertical") -> None:
@@ -338,7 +383,7 @@ class WindowsPlatformProvider(PlatformProvider):
         positive = direction in ("up", "right")
         delta = amount * 120 if positive else -amount * 120
         flag = MOUSEEVENTF_HWHEEL if direction in ("left", "right") else MOUSEEVENTF_WHEEL
-        user32.mouse_event(flag, 0, 0, delta, 0)
+        _send_mouse_input([(flag, delta)])
         time.sleep(SCROLL_SETTLE)
 
     # ── Keyboard ─────────────────────────────────────────────────────────
@@ -444,6 +489,7 @@ class WindowsPlatformProvider(PlatformProvider):
                 info = WindowInfo(
                     id=str(hwnd),
                     title=title,
+                    process_name=self._process_name(pid.value),
                     process_id=pid.value,
                     rect=rect,
                     dpi=dpi,
@@ -497,6 +543,7 @@ class WindowsPlatformProvider(PlatformProvider):
         return WindowInfo(
             id=str(hwnd),
             title=title,
+            process_name=self._process_name(pid.value),
             process_id=pid.value,
             rect=rect,
             dpi=dpi,
@@ -544,6 +591,36 @@ class WindowsPlatformProvider(PlatformProvider):
         buffer = ctypes.create_unicode_buffer(256)
         user32.GetClassNameW(hwnd, buffer, len(buffer))
         return buffer.value
+
+    @staticmethod
+    def _process_name(pid: int) -> str:
+        """Resolve a PID to its executable file name via Win32.
+
+        Returns "" when the process is gone or the handle cannot be opened.
+        This keeps WindowInfo.process_name populated (input_guard keys on
+        it) without a slow tasklist subprocess per window.
+        """
+        if not pid:
+            return ""
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.QueryFullProcessImageNameW.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return ""
+        try:
+            buffer = ctypes.create_unicode_buffer(32768)
+            size = wintypes.DWORD(len(buffer))
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+                return Path(buffer.value).name
+            return ""
+        finally:
+            kernel32.CloseHandle(handle)
 
     @staticmethod
     def _get_window_rect(hwnd: int) -> Tuple[int, int, int, int]:

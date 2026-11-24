@@ -51,6 +51,34 @@ ALL_ACTIONS = POINT_ACTIONS | KEY_ACTIONS | SCROLL_ACTIONS | {
 }
 
 
+# Observe mode aliases.  Hosts used to pass mode="ocr" to the old
+# computer_state tool; that string was silently dropped by the schema, so the
+# UIA layer won and icon-only WebView2 controls stayed unreachable (issue #3).
+VISION_MODES = {"ocr", "vision", "visual", "easyocr", "screenshot"}
+PRECISION_MODES = {"uia", "precision", "accessibility", "a11y", "ax"}
+AUTO_MODES = {"", "auto", "default"}
+
+
+def normalize_observe_mode(
+    mode: Optional[str], force_vision: bool = False,
+) -> tuple[bool, bool, str]:
+    """Resolve an observe request to (force_vision, prefer_precision, label).
+
+    An explicit mode always wins over the implicit ``force_vision`` flag, and
+    an explicit ``ocr`` request must reach the vision layer even when the
+    precision layer previously returned content for the same window.
+    """
+    label = str(mode or "").strip().casefold()
+    if label in VISION_MODES:
+        return True, False, "ocr"
+    if label in PRECISION_MODES:
+        return False, True, "precision"
+    if label in AUTO_MODES:
+        return bool(force_vision), False, ("ocr" if force_vision else "auto")
+    # Unknown string: honour the legacy boolean instead of failing the call.
+    return bool(force_vision), False, ("ocr" if force_vision else "auto")
+
+
 def _suggest_action(name: str) -> str:
     """Return the closest valid action name for a misspelled one, or ''.
 
@@ -155,12 +183,21 @@ class ScreenInteractor:
         window_id: Optional[str] = None,
         max_elements: int = 80,
         force_vision: bool = False,
+        mode: Optional[str] = None,
     ) -> dict:
         """Observe the given window and return a structured snapshot.
+
+        ``mode`` accepts the legacy host spellings: ``"ocr"`` / ``"vision"``
+        force a screenshot+OCR pass (never a cached/app-level precision
+        shortcut), ``"uia"`` / ``"precision"`` force the accessibility layer
+        even for a window that was temporarily blacklisted, ``"auto"`` keeps
+        the precision-first strategy.
 
         Returns JSON-serializable dict with elements, revision, window info.
         Auto-resets blocked state.
         """
+        force_vision, prefer_precision, mode_label = normalize_observe_mode(mode, force_vision)
+
         self._revision += 1
         self._was_blocked = False  # Reset blocked state on fresh observe
 
@@ -168,6 +205,7 @@ class ScreenInteractor:
             window_id=window_id,
             max_elements=max_elements,
             force_vision=force_vision,
+            prefer_precision=prefer_precision,
         )
 
         # Enrich with scale_factor from system index
@@ -195,6 +233,9 @@ class ScreenInteractor:
             "revision": self._revision,
             "window_id": snapshot.window_id,
             "source": snapshot.source,
+            "requested_mode": mode_label,
+            "vision_available": self._router.vision_available,
+            "vision_used": snapshot.source == "vision",
             "elements": [el.to_dict() for el in snapshot.elements],
             "width": snapshot.width,
             "height": snapshot.height,
@@ -266,27 +307,42 @@ class ScreenInteractor:
         results: List[dict] = []
         blocked = False
         blocked_reason = ""
+        warnings: List[str] = []
 
         for i, cmd in enumerate(parsed):
             try:
                 result = self._execute_one(cmd)
                 results.append(result)
+                note = result.get("warning")
+                if note:
+                    warnings.append(f"[{i}] {cmd.type}: {note}")
+                elif result.get("status") == "error":
+                    # Surface failed steps without failing the batch: the host
+                    # needs to see them, the trailing actions still ran.
+                    warnings.append(
+                        f"[{i}] {cmd.type}: "
+                        f"{result.get('error') or result.get('code') or 'failed'}")
                 if result.get("blocked"):
                     blocked = True
                     blocked_reason = result.get("blocked_reason", "action blocked")
                     self._was_blocked = True  # Mark so route_guard can see
                     break
             except Exception as e:
+                # A single failing action must never drop the rest of the
+                # batch: the trailing ENTER/= of a type sequence is exactly
+                # what used to be swallowed (issue #1).
                 results.append({
                     "index": i, "type": cmd.type, "status": "error",
                     "error": str(e),
                 })
+                warnings.append(f"[{i}] {cmd.type}: {e}")
 
         # Wrap up result
         response: dict = {
             "status": "ok" if not blocked else "blocked",
             "actions_executed": len(results),
             "results": results,
+            "warnings": warnings,
         }
 
         # Auto-append lightweight observe snapshot after execute
@@ -413,6 +469,12 @@ class ScreenInteractor:
                 pass
             self._platform.keyboard_type(cmd.text)
             result["text_length"] = len(cmd.text)
+            # Injected, not OCR-verified.  Apps re-render typed text in their
+            # own format (Calculator shows "1024 × 768" for "1024*768"), so a
+            # literal OCR match is impossible by construction — and a failed
+            # match must never abort the rest of the batch (issue #1).  The
+            # host verifies through `expect` or the post-execute `after` state.
+            result["input_verification"] = "unverified"
             return result
 
         if cmd.type in ("press", "press_key", "key", "submit", "enter"):
@@ -462,10 +524,66 @@ class ScreenInteractor:
 
         # ── Save as ───────────────────────────────────────────────────
         if cmd.type == "save_as":
-            result["note"] = "save_as not yet implemented for screen_interactor"
-            return result
+            return self._save_as(cmd)
 
         return {"type": cmd.type, "status": "error", "error": f"Unhandled action: {cmd.type}"}
+
+    # ── Save-as helper ───────────────────────────────────────────────────
+
+    # Window titles that look like a file dialog (Save As / 另存为 / 导出).
+    SAVE_DIALOG_MARKERS = (
+        "另存为", "另存新檔", "保存为", "保存文件", "选择保存位置",
+        "save as", "save a copy", "save file", "export", "导出",
+    )
+
+    def _save_as(self, cmd: ActionCommand) -> dict:
+        """Drive a native "Save As" dialog: shortcut → path → Enter.
+
+        Best-effort by design: the dialog must be shown by the application
+        itself.  When the foreground window after the shortcut does not look
+        like a file dialog, nothing is typed — blindly injecting a path would
+        write it into the document body instead.
+        """
+        import time
+
+        path = (cmd.path or cmd.text or "").strip()
+        if not path:
+            return {"type": "save_as", "status": "error", "code": "missing_path",
+                    "error": "save_as requires 'path' (absolute target file path, "
+                             "e.g. D:\\\\out\\\\note.md)"}
+
+        keys = list(cmd.keys) if cmd.keys else ["ctrl", "shift", "s"]
+        self._platform.keyboard_press(keys)
+        time.sleep(0.6)
+
+        try:
+            fg = self._platform.get_foreground_window()
+        except Exception:
+            fg = None
+        title = (getattr(fg, "title", "") or "")
+        folded = title.casefold()
+
+        if not any(marker.casefold() in folded for marker in self.SAVE_DIALOG_MARKERS):
+            return {"type": "save_as", "status": "error",
+                    "code": "save_dialog_not_detected",
+                    "path": path, "shortcut": keys,
+                    "foreground_title": title,
+                    "error": "另存为对话框未出现，未注入路径以免写入正文",
+                    "hint": "先用 observe 确认应用已聚焦文档；部分应用用快捷键直接保存到"
+                            "默认路径，可用 computer_system(operation='file', query=...) 校验结果",
+                    "warning": "save_as 未完成：未检测到文件对话框"}
+
+        # The filename field is focused and pre-selected in every native
+        # dialog; Ctrl+A guarantees a replacement instead of an append.
+        self._platform.keyboard_press(["ctrl", "a"])
+        self._platform.keyboard_type(path)
+        time.sleep(0.2)
+        self._platform.keyboard_press(["enter"])
+
+        return {"type": "save_as", "status": "ok", "path": path,
+                "shortcut": keys, "verified": False,
+                "note": "已向另存为对话框注入路径并回车；请用 observe 或文件存在性校验确认",
+                "warning": f"save_as 仅注入路径，未经文件存在性校验: {path}"}
 
     # ── Verification ─────────────────────────────────────────────────────
 

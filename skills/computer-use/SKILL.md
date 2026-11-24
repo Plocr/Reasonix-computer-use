@@ -1,6 +1,6 @@
 ---
 description: Windows 桌面自动化执行规则。使用 screen_interactor 观察与操作原生桌面应用。
-allowed-tools: [screen_interactor, computer_system, computer_app, ask]
+allowed-tools: [screen_interactor, computer_state, computer_action, computer_system, computer_app, web_navigator, ask]
 ---
 
 # Computer Use — 原生桌面操作
@@ -96,7 +96,20 @@ allowed-tools: [screen_interactor, computer_system, computer_app, ask]
 | `type` | 输入文本 | `text` |
 | `press` | 按键组合 | `keys: ["CTRL", "C"]` 或 `key: "Enter"` |
 | `scroll` | 滚动 | `amount`（正=下/右，负=上/左） |
+| `save_as` | 触发另存为/导出对话框并写入目标路径 | `path`（绝对路径，如 `D:\\out\\note.md`） |
 | `wait` | 等待 | `duration`（秒） |
+
+`save_as` 是"另存为对话框"驱动：发快捷键（默认 `ctrl+shift+s`，可用 `keys` 覆盖，
+macOS 传 `["cmd","shift","s"]`）→ 校验前台窗口标题确实是文件对话框 → `ctrl+a`
+→ 输入 `path` → 回车。**未检测到对话框时不会输入任何字符**（避免把路径写进正文），
+返回 `code: "save_dialog_not_detected"`，此时改用 observe 找到"文件 → 另存为"菜单项
+点击后再 `type` 路径。
+
+**⚠️ 单步失败不会中止整个批次**：`type`/`click` 等某一步出错时，后续动作继续执行，
+错误汇入响应顶层的 `warnings` 数组（每条形如 `[0] type: <原因>`）。收到 `warnings`
+非空时按条修正，不要因为看到 `warnings` 就整批重跑。
+`type` 的结果带 `input_verification: "unverified"`——注入成功不等于界面渲染出同样字符
+（计算器会把 `1024*768` 显示成 `1024 × 768`），最终结果请用 `expect` 或 `after` 快照确认。
 
 **⚠️ 常见错误**：`hotkey`、`shortcut`、`keycombo` 等都不是有效动作类型。
 打开开始菜单用 `press` + `keys: ["win"]`，搜索用 `press` + `keys: ["win", "s"]`。
@@ -117,10 +130,21 @@ allowed-tools: [screen_interactor, computer_system, computer_app, ask]
   （`窗口内 x = 物理x - window_rect[0]`；`window_rect` 字段缺失表示按全屏映射）。
   element_ref 命中时不返回 window_rect（坐标直接来自元素 bbox）。
 - 自绘 UI（QQ/CEF/游戏）无障碍树不可用时，推荐工作流：
-  1. 用截图（`screenshot_path`）裁剪目标区域；
-  2. 像素检测定位（主题色/边框等确定性特征），或把裁剪图交给视觉工具描述布局；
-  3. 换算物理像素 → 用 `space: "PIXEL"` 点击；
-  4. 观察响应 `x`/`y` 与目标一致，再截图确认效果。
+  1. 用 `observe_mode: "ocr"`（或旧的 `force_vision: true` / `mode: "ocr"`）**强制**
+     截屏 + OCR：显式请求 OCR 时不会再被无障碍层的缓存结果满足，无 aria 的纯图标
+     按钮（WebView2 / Electron / wails 应用）只能靠这条路径拿到文本与坐标；
+  2. 用截图（`screenshot_path`）裁剪目标区域；
+  3. 像素检测定位（主题色/边框等确定性特征），或把裁剪图交给视觉工具描述布局；
+  4. 换算物理像素 → 用 `space: "PIXEL"` 点击；
+  5. 观察响应 `x`/`y` 与目标一致，再截图确认效果。
+- **观察层选择（`observe_mode`）**：
+  | 取值 | 行为 |
+  |---|---|
+  | `auto`（默认） | 精准层优先，失败回落视觉层 |
+  | `ocr` | 强制截屏 + OCR，绝不被无障碍层结果短路 |
+  | `precision` | 强制 UIA/AXAPI/AT-SPI2，连临时黑名单也忽略 |
+  `observe` 响应会回传 `requested_mode`、`vision_available`、`vision_used`，
+  可据此判断 OCR 是否真的执行过（`vision_used: false` + `source: "precision"` 表示走了精准层）。
 
 ## 完成判定与退出（防循环）
 

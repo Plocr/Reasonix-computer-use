@@ -6,10 +6,10 @@ from .base import PlatformProvider, WindowInfo
 class UnsupportedPlatformProvider(PlatformProvider):
     """Fail-fast stub for platforms without a native implementation.
 
-    macOS (AXAPI) and Linux (AT-SPI2) backends are planned but not yet
-    implemented.  Using the Windows provider on those platforms would crash
-    at import time (``ctypes.windll`` does not exist), so we raise a clear
-    error instead of pretending to work.
+    Windows (UIA + SendInput), Linux/X11 (AT-SPI2 + XTEST) and macOS
+    (AXAPI + CGEvent) all have real backends.  Anything else (BSD, exotic
+    ports) gets this stub so importing the package never crashes and the
+    failure mode is a clear NotImplementedError instead of a silent no-op.
     """
 
     def __init__(self, platform_name: str):
@@ -17,8 +17,8 @@ class UnsupportedPlatformProvider(PlatformProvider):
 
     def _unsupported(self, method: str):
         raise NotImplementedError(
-            f"{self._platform_name} backend is not implemented yet "
-            f"({method}); Windows 10/11 is the only supported platform")
+            f"{self._platform_name} backend is not implemented ({method}); "
+            "supported platforms are Windows 10/11, Linux (X11) and macOS")
 
     def mouse_move(self, x, y): self._unsupported("mouse_move")
     def mouse_click(self, x, y, button="left", count=1, duration=0.0): self._unsupported("mouse_click")
@@ -55,7 +55,7 @@ def get_platform() -> PlatformProvider:
     if sys.platform == "darwin":
         from .macos import MacOSPlatformProvider
         return MacOSPlatformProvider()
-    return UnsupportedPlatformProvider("Linux")
+    return UnsupportedPlatformProvider(sys.platform)
 
 # WindowsPlatformProvider is imported lazily inside get_platform() because
 # reasonix_computer_use/platform/windows.py executes ``ctypes.windll`` at

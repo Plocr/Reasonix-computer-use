@@ -277,6 +277,15 @@ def generate_plan(task: str) -> TaskPlan:
     needs_profile = _needs_system_profile(task)
     parsed = _parse_actions(task)
 
+    # Missing runtime dependencies (PIL/comtypes/easyocr) are detected here
+    # so the plan can tell the operator to install them before executing.
+    needs_dependencies: list[str] = []
+    try:
+        from .environment_setup import missing_modules
+        needs_dependencies = missing_modules()
+    except Exception:
+        pass
+
     # Build steps
     steps: list[TaskStep] = []
     step_id = 0
@@ -327,6 +336,7 @@ def generate_plan(task: str) -> TaskPlan:
         goal=task,
         difficulty=difficulty,
         needs_system_profile=needs_profile,
+        needs_dependencies=needs_dependencies,
         steps=steps,
         estimated_steps=len(steps),
     )

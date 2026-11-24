@@ -9,6 +9,10 @@
 > 旧版为 Windows 专用单体实现；新版抽出独立分层（protocol / platform / perception / services / tools），
 > 为三平台构建统一抽象接口，同一套公共时序与协议代码。
 
+> **维护状态（2026-11）**：功能已完备，进入**低维护期**。不新增平台或大功能；
+> 安装/装不上、崩溃、静默失败这类阻断问题优先修，其余按时间处理。
+> 0.9.0-preview 已一次性关闭 #1–#7（manifest v2、OCR 模式、批次中止、另存为、MCP 稳定性）。
+
 ## ✨ 特性
 
 | 能力 | 说明 |
@@ -38,10 +42,59 @@
 
 ### 1. 安装
 
+Reasonix 插件包通过 `reasonix plugin` 命令安装和管理，按全局范围写入
+Reasonix home 目录（`~/.reasonix/plugins/<name>/`，安装状态记录在
+`~/.reasonix/plugin-packages.json`）。
+
+**方式一：从 Git 仓库安装（推荐）**
+
 ```bash
-# 开发/链接安装
+# 预检：只预览安装计划，不写文件
+reasonix plugin install git:github.com/<owner>/reasonix-computer-use --dry-run
+
+# 确认计划后安装
+reasonix plugin install git:github.com/<owner>/reasonix-computer-use --yes
+```
+
+也可以直接给 GitHub 仓库 URL，或带分支/子目录的 URL
+（`https://github.com/<owner>/reasonix-computer-use/tree/<branch>/<subdir>`）。
+`install` 只有在带有 `--dry-run` 或 `--yes` 时才写文件。
+
+**方式二：本地目录安装（开发模式）**
+
+```bash
+# 开发/链接安装：不复制插件，直接链接本地目录；移动或删除目录会导致链接插件失效
 reasonix plugin install /path/to/reasonix-computer-use --link --replace --yes
 ```
+
+常用安装参数：
+
+| 参数 | 作用 |
+|---|---|
+| `--dry-run` | 只规划和校验安装，不写文件 |
+| `--yes` | 确认执行会写文件的安装 |
+| `--replace` | 允许当前来源替换已安装的同名插件 |
+| `--name <name>` | 覆盖插件 manifest 声明的名称，作为本次安装名称 |
+| `--link` | 链接本地插件目录，而不是复制到插件存储目录 |
+
+**桌面端安装**：打开 **设置 → 插件**，选择 **本地目录** 或填写 **Git 来源**，
+先点 **预检** 校验来源并展示安装计划，再点 **安装插件**；**开发模式：链接源目录**
+只在本地目录模式下出现。
+
+**插件管理**：
+
+```bash
+reasonix plugin list              # 列出已安装插件
+reasonix plugin show computer-use # 查看元数据、根目录、来源及导出的能力清单
+reasonix plugin doctor computer-use  # 检查 manifest 与 skill roots 是否可读
+reasonix plugin disable computer-use # 禁用（不卸载）
+reasonix plugin enable computer-use  # 重新启用
+reasonix plugin remove computer-use --yes  # 卸载（remove 可写成 uninstall）
+```
+
+会话内可用 `/plugins` 列出已安装插件，`/plugins show computer-use` 查看该插件
+导出的 skills、hooks、MCP servers 和使用提示；`/computer-use:run <任务>` 显式启动
+桌面自动化任务。
 
 **平台依赖**：
 
@@ -50,6 +103,13 @@ reasonix plugin install /path/to/reasonix-computer-use --link --replace --yes
 | Windows | 自动安装（Pillow/comtypes/easyocr） | 无 |
 | Linux | `pip install -e ".[dev,linux]"` | `apt install xvfb at-spi2-core python3-gi gir1.2-atspi-2.0`（输入中文需 `xclip` 或 `xsel`；Wayland 截图需 `grim`） |
 | macOS | `pip install -e ".[dev,macos]"` | 系统设置 → 隐私与安全性 → 授予进程**辅助功能**（输入注入）与**屏幕录制**（截图）权限 |
+
+> **Linux/macOS 入口说明**：插件 manifest 中的 MCP 启动命令
+> `reasonix-computer-use.bat` 为 Windows 入口。Linux/macOS 上请先完成上方
+> pip 安装（生成 `reasonix-computer-use` console script），再把
+> `reasonix-plugin.json` 中 `hooks` 与 `mcpServers` 的 `command` 改为
+> `reasonix-computer-use`（console script 名，位于 PATH 中），hooks 的
+> `args: ["--hook"]` 保持不变。
 
 ### 2. 显式使用
 
@@ -187,13 +247,26 @@ pip install -e ".[dev,macos]"     # macOS
 python -m pytest -q -p no:warnings
 ```
 
+**EasyOCR 预加载**：默认情况下 OCR 模型在首次视觉请求时延迟加载（避免文本模型
+会话白白占用数百 MB 显存/内存）。需要启动预加载时设置环境变量
+`REASONIX_COMPUTER_USE_PREWARM_OCR=1`。
+
 **CI 三平台**（GitHub Actions `tests.yml`）：windows-latest + ubuntu-latest（xvfb + at-spi2-core）+ macos-14，每次 push 自动跑全量测试。
 
-**测试规模**：157+ 测试（公共逻辑 / 三平台 provider / 感知层 / 系统画像 / 工具接口），fake 注入保证跨平台可跑。
+**测试规模**：196 测试（公共逻辑 / 三平台 provider / 感知层 / 系统画像 / 工具接口 / issue 回归），fake 注入保证跨平台可跑。
 
 > 📚 实战经验记录在 `docs/LESSONS.zh-CN.md`（本地保留，不上传）：QQ 音乐双击修复、防循环规则、三平台适配、CI 踩坑等 14 条教训。
 
 ## 📦 版本历史
+
+**0.9.0-preview 收尾修复（issue #1–#7）**：
+
+- **manifest 迁移 `reasonix.io/plugin/v2`**：声明 `apiVersion`，`skills/agents/commands/hooks/mcpServers` 收进 `contributes`，`reasonix plugin install` 与市场审核均可通过（#4 / #5 / #6 / #7）
+- **`mode: "ocr"` 真正生效**：新增 `observe_mode: auto|ocr|precision`；显式 OCR 请求强制截屏 + OCR，不再被精准层的缓存结果短路；响应回传 `requested_mode` / `vision_available` / `vision_used`（#3）
+- **批次不再被单步失败吞掉**：`type` 的 OCR 字面匹配校验取消，改为 `input_verification: "unverified"`；任何单步失败继续执行后续动作，错误汇总到顶层 `warnings`（#1）
+- **`save_as` 动作**：另存为/导出对话框驱动（快捷键 → 校验对话框标题 → 注入路径 → 回车），未检测到对话框时绝不注入，避免路径跑进正文（#2）
+- **MCP 主循环加固**：空白心跳行不再被当作 EOF 退出；坏 JSON 跳过而非杀进程；插件热更新后继续服务并返回可重试错误（#2）
+- 新增 12 条 issue 回归测试，全量 **196 passed / 195 skipped**
 
 **0.9.0-preview** — 三平台统一预览版：
 

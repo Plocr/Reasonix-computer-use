@@ -98,10 +98,23 @@ class FfmpegRecorder:
 
     def start(self, output_path: Path, args_builder: Callable,
               rect: Optional[Tuple[int, int, int, int]] = None) -> bool:
-        """Start recording.  Returns True if recording actually started."""
+        """Start recording.  Returns True if recording actually started.
+
+        A recording already in progress is stopped first so the previous
+        ffmpeg subprocess can never leak (repeated start calls previously
+        orphaned the old process).
+        """
+        if self._process is not None and self._process.poll() is None:
+            self.stop()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         self._output = output_path
-        args = args_builder(rect)
+        try:
+            args = args_builder(rect)
+        except Exception:
+            # A builder failure (e.g. invalid rect) means we cannot record.
+            self._process = None
+            self._output = None
+            return False
         try:
             self._process = subprocess.Popen(
                 args,
@@ -122,6 +135,8 @@ class FfmpegRecorder:
             return True
         except FileNotFoundError:
             # FFmpeg not available — can't record
+            self._process = None
+            self._output = None
             return False
 
     def stop(self) -> Optional[Path]:
