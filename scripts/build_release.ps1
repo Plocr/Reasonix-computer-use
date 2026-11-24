@@ -60,10 +60,11 @@ if (-not $dependencies.Count) { throw "pyproject.toml does not declare runtime d
 & $python -m pip install --disable-pip-version-check --no-warn-script-location `
     --no-compile --target $sitePackages @dependencies
 if ($LASTEXITCODE -ne 0) { throw "Failed to install the plugin runtime dependencies" }
-$packageTarget = Join-Path $sitePackages "reasonix_computer_use"
-New-Item -ItemType Directory -Force -Path $packageTarget | Out-Null
-Copy-Item -Path (Join-Path $root "reasonix_computer_use\*.py") `
-    -Destination $packageTarget -Force
+# Copy the full package tree — the plugin is split into subpackages
+# (protocol/, platform/, perception/, tools/, services/); copying only the
+# top-level *.py files produced a broken runtime in earlier releases.
+Copy-Item -Path (Join-Path $root "reasonix_computer_use") `
+    -Destination $sitePackages -Recurse -Force
 
 # pip is a build tool, not a runtime dependency. Do not ship an installer in the plugin.
 Remove-Item -LiteralPath (Join-Path $sitePackages "pip") -Recurse -Force -ErrorAction SilentlyContinue
@@ -71,8 +72,8 @@ Get-ChildItem -LiteralPath $sitePackages -Filter "pip-*.dist-info" | Remove-Item
 Remove-Item -LiteralPath (Join-Path $runtime "Scripts") -Recurse -Force -ErrorAction SilentlyContinue
 
 $files = @(
-    "reasonix-plugin.json", "reasonix-computer-use.bat", "README.md", "USER_GUIDE.md",
-    "LICENSE", "CLAUDE.md", "skills", "commands", "capability_tests", "capability_app"
+    "reasonix-plugin.json", "reasonix-computer-use.bat", "README.md",
+    "LICENSE", "skills", "commands", "agents", "hooks", "capability_tests"
 )
 foreach ($file in $files) {
     $source = Join-Path $root $file
@@ -94,7 +95,7 @@ $buildInfo | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $stage "BUILD-
     --output (Join-Path $stage "THIRD-PARTY-PACKAGES.md")
 if ($LASTEXITCODE -ne 0) { throw "Failed to generate the third-party package list" }
 
-& $python -c "import comtypes, PIL, rapidocr_onnxruntime, reasonix_computer_use; assert reasonix_computer_use.__version__ == '$version'"
+& $python -c "import comtypes, PIL, easyocr, reasonix_computer_use; assert reasonix_computer_use.__version__ == '$version'"
 if ($LASTEXITCODE -ne 0) { throw "Embedded runtime import verification failed" }
 
 $initialize = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'

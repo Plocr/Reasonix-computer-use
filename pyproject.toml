@@ -7,6 +7,7 @@ dependencies = [
     "Pillow>=10.0.0",
     "comtypes>=1.4.0",
     "easyocr>=1.7",
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
