@@ -279,7 +279,7 @@ python -m pytest -q -p no:warnings
 
 **CI 三平台**（GitHub Actions `tests.yml`）：windows-latest + ubuntu-latest（xvfb + at-spi2-core）+ macos-14，每次 push 自动跑全量测试。
 
-**测试规模**：196 测试（公共逻辑 / 三平台 provider / 感知层 / 系统画像 / 工具接口 / issue 回归），fake 注入保证跨平台可跑。
+**测试规模**：198 测试（公共逻辑 / 三平台 provider / 感知层 / 系统画像 / 工具接口 / issue 回归），fake 注入保证跨平台可跑。
 
 > 📚 实战经验记录在 `docs/LESSONS.zh-CN.md`（本地保留，不上传）：QQ 音乐双击修复、防循环规则、三平台适配、CI 踩坑等 14 条教训。
 
@@ -291,8 +291,8 @@ python -m pytest -q -p no:warnings
 - **`mode: "ocr"` 真正生效**：新增 `observe_mode: auto|ocr|precision`；显式 OCR 请求强制截屏 + OCR，不再被精准层结果短路；响应回传 `requested_mode` / `vision_available` / `vision_used`（#3）
 - **批次不再被单步失败吞掉**：取消 `type` 的 OCR 字面匹配校验，改为 `input_verification: "unverified"`；单步失败继续执行后续动作，错误汇总到顶层 `warnings`（#1）
 - **`save_as` 动作**：另存为/导出对话框驱动，未检测到对话框时绝不注入，避免路径跑进正文（#2）
-- **MCP 主循环加固**：空白心跳行不再当作 EOF 退出；坏 JSON 跳过而非杀进程；插件热更新后继续服务并返回可重试错误（#2）
-- 新增 12 条回归测试，全量 **196 passed / 195 skipped**
+- **MCP 传输层加固**：空白心跳行不再当作 EOF 退出；坏 JSON 跳过而非杀进程；插件热更新后继续服务并返回可重试错误；启动日志从 stdout 移到 stderr（`[startup]` 行混进 JSON-RPC 流会让宿主解析失败，看起来就是"服务崩了"）（#2）
+- 新增 14 条回归测试，全量 **198 passed / 195 skipped**
 
 **0.9.0-preview** — 三平台统一预览版：
 
@@ -323,6 +323,31 @@ python -m pytest -q -p no:warnings
 - `web_navigator` Web 场景统一通道；隐藏工具归一化坐标强制
 - 跨平台抽象层（Windows / macOS / Linux）；SystemProfiler 含 scale_factor
 - EasyOCR 替换 RapidOCR
+
+## 🙏 致谢
+
+**谢谢 Reasonix 生态。** 在 *DSH 还没成型的那段时间*，它是少数真能当 agent 用、
+并且真能驱动桌面的东西——`reasonix plugin` 那套 manifest + MCP + skill + hook 的
+扩展模型，让「桌面自动化」这种原本要自带一整套框架才做得成的想法，变成一个能
+`install` 进宿主的小包。这个仓库里所有实战都不是纸上推演，是挂在它上面跑出来的：
+QQ 音乐的双击节奏、WPS 的另存为、Ollama Desktop 的窗口切换——所以它停维护了，
+这些经验还在，也被搬进了 DSH。
+
+也谢谢在 issue 里报现场的人。他们带来的是一手证据，不是"感觉不能用"：
+
+| 反馈者 | 带来的现场 |
+|---|---|
+| [@qingduzhai](https://github.com/qingduzhai) | 计算器把 `1024*768` 渲染成 `1024 × 768`，暴露了"字面匹配做校验"这个设计错误（#1） |
+| [@Linearl](https://github.com/Linearl) | WebView2 里无 aria 的纯图标按钮 + OCR 被缓存短路，逼出了显式 `mode`（#2 #3） |
+| [@qi20040406](https://github.com/qi20040406) | 补 `apiVersion` 后仍报 `unknown field "agents"`，精确定位到 v2 校验边界（#5） |
+| [@lixi523](https://github.com/lixi523) | 多模型配置下的同一装不上问题，说明这不是个例（#4） |
+| [@taominjigithub002](https://github.com/taominjigithub002) | 自己写好 `contributes` 迁移并给出实测结果，PR #6 是最后双写方案的起点 |
+| [@esengine](https://github.com/esengine) | 市场侧把"为什么装不上、怎么重发"讲得足够具体，省掉了整套猜测（#7） |
+
+它们的共同价值是：**报的都是"不报错但结果不对"**——批次被静默截断、OCR 从没执行、
+契约对不上。这类问题自己测永远测不出来，只能靠真实用户在真实机器上撞。
+
+最后，谢谢所有在 README 之外读这份代码的人。设计可以过时，踩过的坑不会。
 
 ## 📄 许可证
 
